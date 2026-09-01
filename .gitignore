@@ -1,0 +1,25 @@
+# Never commit device credentials or the APK payload
+.env
+*.env
+*.apk
+*.xapk
+*.ab
+__pycache__/
+*.pyc
+# scratch key material
+*local_key*
+*.bmp
+
+# Reverse-engineering notes + superseded/cloud-path tooling: local-only, not
+# part of the published integration. See research/README.md.
+/research/
+
+# Owner's real setup values (real IPs, ids, account identifiers). Never commit.
+/MY-SETUP.md
+
+# Cloud-path credential notes (appKey/appSecret) live in research/, not the public tree.
+/CREDENTIALS.md
+
+# Owner's private research trail, planning notes, and key-extraction tooling.
+# Not part of the published integration. Stays local, never committed.
+/local/

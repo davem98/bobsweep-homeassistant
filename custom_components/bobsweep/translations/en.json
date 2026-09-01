@@ -1,0 +1,234 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect bObsweep vacuum (local)",
+        "description": "This integration talks to the vacuum directly on your LAN over the Tuya local protocol — no cloud account or login is used.\n\n**Host**: the vacuum's LAN IP address. A DHCP reservation on your router is strongly recommended so this doesn't change later.\n\n**Device ID** and **Local Key**: these are NOT your Tuya account credentials. They must be extracted out-of-band from your Tuya/bObsweep app's local data (e.g. via a rooted phone or emulator, or the `tinytuya` wizard/scanner tool) before starting this flow.\n\n**Protocol version**: the Tuya local protocol version your device speaks (try 3.3 first if unsure).\n\n**Model family**: which bObsweep datapoint map to use. Pick the one your model is listed under — the datapoint ids and command values are different per family, so the wrong choice leaves entities blank and commands ignored.",
+        "data": {
+          "host": "Host (IP address)",
+          "device_id": "Device ID",
+          "local_key": "Local key",
+          "protocol_version": "Protocol version",
+          "model_family": "Model family",
+          "name": "Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the vacuum at that host. Check the IP address and that the device is powered on and reachable.",
+      "invalid_auth": "Connected, but the device ID / local key was rejected. Re-extract them from your Tuya app data and try again.",
+      "unknown": "Unexpected error while validating the connection."
+    },
+    "abort": {
+      "already_configured": "This vacuum (by device ID) is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "bObsweep options",
+        "description": "**Approximate position from obstacle detections** — off by default, and worth understanding before turning on.\n\nThis robot has no working datapoint that reports where it is (the path-trail datapoint was tested through a full cleaning job and never returned a single point). What it does report is the obstacles its camera finds — and because it spots them directly in front of itself, a brand-new detection is roughly where the robot was standing at the time.\n\nThat is a rough indication, not localisation. It only produces a reading when the robot finds something new on the floor, which may be a handful of times in a whole clean and never at all in a tidy room, and the reading is offset by however far ahead the camera saw.\n\nEnable it and the `current_room` sensor will start using it to guess which taught zone the robot is in. Room changes need several agreeing readings before they are confirmed, but with evidence this sparse the sensor can still name the wrong room — so do not build anything safety-relevant on it. Leave it off and `current_room` stays *unknown*, which is the honest answer.\n\nThe **Detected obstacles** sensor works either way; this setting only controls whether obstacle positions are also used to guess the room.",
+        "data": {
+          "ai_object_position": "Estimate position from obstacle detections"
+        },
+        "data_description": {
+          "ai_object_position": "Sparse and approximate. Off means the current-room sensor reports unknown instead of guessing."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current_room": {
+        "name": "Current room"
+      },
+      "detected_obstacles": {
+        "name": "Detected obstacles"
+      },
+      "fault": {
+        "name": "Fault",
+        "state": {
+          "battery": "Battery",
+          "battery_low": "Battery low",
+          "battery_out_of_charge": "Battery out of charge",
+          "bob_stuck": "Robot stuck",
+          "brush_arm_electronic": "Brush arm electronics",
+          "bumper": "Bumper",
+          "bumper_left": "Left bumper",
+          "bumper_right": "Right bumper",
+          "camera_electronics": "Camera electronics",
+          "camera_not_detected": "Camera not detected",
+          "camera_sensor_not_responsive": "Camera sensor not responding",
+          "camera_sw_incompatible": "Camera software incompatible",
+          "camera_sw_not_to_date": "Camera software out of date",
+          "charging": "Charging",
+          "charging_station": "Charging station",
+          "clean_solution_pump": "Cleaning solution pump",
+          "clean_water_container_pump": "Clean water pump",
+          "clean_water_container_valve": "Clean water valve",
+          "clean_water_low": "Clean water low",
+          "congestion": "Blockage",
+          "dirty_water_container_pump": "Dirty water pump",
+          "dirty_water_full": "Dirty water tank full",
+          "dust_bag": "Dust bag",
+          "dust_bag_full": "Dust bag full",
+          "dustbin": "Dustbin",
+          "dustbin_mop": "Dustbin or mop",
+          "edge_sensor_front": "Front edge sensor",
+          "edge_sensor_left": "Left edge sensor",
+          "edge_sensor_right": "Right edge sensor",
+          "edge_sensors": "Edge sensors",
+          "electronics": "Electronics",
+          "floor_sense": "Floor sensor",
+          "lidar_bumper": "Lidar bumper",
+          "lidar_sensor": "Lidar sensor",
+          "localization": "Lost its position",
+          "low_battery": "Battery low",
+          "main_brush": "Main brush",
+          "mop": "Mop",
+          "mop_arm_electronic": "Mop arm electronics",
+          "mop_arm_jam": "Mop arm jammed",
+          "mop_arm_sensor": "Mop arm sensor",
+          "mop_attachment_not_detected": "Mop attachment not detected",
+          "mop_dryer_trouble": "Mop dryer",
+          "mop_electronic_left": "Left mop electronics",
+          "mop_electronic_right": "Right mop electronics",
+          "mop_jam_left": "Left mop jammed",
+          "mop_jam_right": "Right mop jammed",
+          "mop_not_connected": "Mop not connected",
+          "mop_not_connected_left": "Left mop not connected",
+          "mop_not_connected_right": "Right mop not connected",
+          "mop_sensor_left": "Left mop sensor",
+          "mop_sensor_right": "Right mop sensor",
+          "navigation": "Navigation",
+          "no_battery_found": "No battery found",
+          "none": "No fault",
+          "overheated": "Overheated",
+          "positioning": "Positioning",
+          "power_error": "Power",
+          "settings_discrepancy": "Settings mismatch",
+          "side_brush": "Side brush",
+          "station_lid": "Dock lid",
+          "station_motor": "Dock motor",
+          "station_overheat": "Dock overheated",
+          "station_sensor": "Dock sensor",
+          "tray_cant_drain": "Tray cannot drain",
+          "user_interface": "Control panel",
+          "vacuum_fan_motor": "Vacuum fan motor",
+          "vacuum_motor": "Vacuum motor",
+          "vacuum_motor_jam": "Vacuum motor jammed",
+          "wall_sensor": "Wall sensor",
+          "wall_sensor_dirty": "Wall sensor dirty",
+          "water_dispenser": "Water dispenser",
+          "water_dispenser_not_working": "Water dispenser not working",
+          "wheel": "Wheel",
+          "wheel_left": "Left wheel",
+          "wheel_right": "Right wheel",
+          "wheel_sensor": "Wheel sensor"
+        }
+      }
+    },
+    "switch": {
+      "camera_object_detection": {
+        "name": "Camera obstacle detection"
+      }
+    }
+  },
+  "selector": {
+    "model_family": {
+      "options": {
+        "slam": "SLAM / LiDAR — bObsweep SLAM, Austin, Dustin (+ Plus/Combo), Appetite, Phoenix, Archer, Orbi, Bio, Maxim, UltraVision (+ Pet/Pet Combo)",
+        "vision": "Vision — Bob PetHair Vision, Bob PetHair Vision Plus",
+        "random": "Random — bObsweep Leaf, Charlotte"
+      }
+    }
+  },
+  "services": {
+    "set_mode": {
+      "name": "Set work mode",
+      "description": "Write a raw Tuya work-mode value to the robot's work-mode datapoint. The accepted values depend on the configured model family.",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "The Tuya work-mode enum value to send."
+        }
+      }
+    },
+    "empty_dustbin": {
+      "name": "Empty dustbin",
+      "description": "Trigger the auto-empty dock to empty the robot's onboard dustbin. Only the SLAM family has a self-emptying dock."
+    },
+    "set_dp": {
+      "name": "Set datapoint (raw)",
+      "description": "Advanced/debug: write a raw value to an arbitrary Tuya datapoint by id.",
+      "fields": {
+        "dp": {
+          "name": "Datapoint id",
+          "description": "The Tuya datapoint id to write (as a string, e.g. \"3\")."
+        },
+        "value": {
+          "name": "Value",
+          "description": "The value to write (string, integer, or boolean)."
+        }
+      }
+    },
+    "capture_point": {
+      "name": "Capture point",
+      "description": "Record the robot's current position into a scratch buffer under a label. Fails with an explanation if the robot cannot report a position.",
+      "fields": {
+        "label": {
+          "name": "Label",
+          "description": "A name for this point, e.g. \"kitchen NW corner\"."
+        }
+      }
+    },
+    "start_zone_capture": {
+      "name": "Start zone capture",
+      "description": "Begin recording the robot's position into a named capture session. Drive the robot around the whole room, then call Stop zone capture.",
+      "fields": {
+        "name": {
+          "name": "Zone name",
+          "description": "The room name to save the captured footprint under."
+        }
+      }
+    },
+    "stop_zone_capture": {
+      "name": "Stop zone capture",
+      "description": "End the running capture session, derive a room footprint from the sampled positions, and save it as a zone."
+    },
+    "delete_zone": {
+      "name": "Delete zone",
+      "description": "Delete a stored zone by name.",
+      "fields": {
+        "name": {
+          "name": "Zone name",
+          "description": "The name of the zone to delete (case-insensitive)."
+        }
+      }
+    },
+    "export_zones": {
+      "name": "Export zones",
+      "description": "Return the whole zone document as service response data, for backup or hand-editing."
+    },
+    "import_zones": {
+      "name": "Import zones",
+      "description": "Load zones from an exported document, a bare list of zones, or a JSON string of either.",
+      "fields": {
+        "data": {
+          "name": "Zone data",
+          "description": "The exported zone document, a list of zones, or JSON text."
+        },
+        "replace": {
+          "name": "Replace all",
+          "description": "Replace the entire stored zone set instead of merging into it."
+        }
+      }
+    }
+  },
+  "issues": {
+    "zones_stale": {
+      "title": "bObsweep room zones no longer match the map",
+      "description": "The bObsweep robot's charging dock now reports a position {drift} map cells away from where it was when the room zones were saved (the limit is {threshold}). The dock does not move, so the robot's map origin has shifted — every saved zone is now measuring the wrong part of your home.\n\nRoom reporting has been suspended: the `current_room` sensor reads *unknown* rather than confidently naming the wrong room.\n\nTo fix this, re-capture your zones with the `bobsweep.start_zone_capture` / `bobsweep.stop_zone_capture` services, or re-import a set that matches the current map with `bobsweep.import_zones`. Either one clears this issue."
+    }
+  }
+}

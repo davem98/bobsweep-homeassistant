@@ -1,0 +1,226 @@
+# Custom services for the bObsweep (local Tuya) integration.
+# These are entity services registered on the vacuum platform, so each call
+# targets one or more bObsweep vacuum entities.
+#
+# The service schemas are shared across all three DP families, so the dropdowns
+# below list every family's values. The target entity rejects a value its own
+# family does not define. The per-family datapoint maps are not published in
+# this repo.
+
+set_mode:
+  name: Set work mode
+  description: >-
+    Write a raw Tuya WORK_MODE value directly to the robot's work-mode
+    datapoint. Use this to reach modes the standard vacuum controls do not
+    expose (zone, follow-wall, select-room, quick-map, spiral, ...). Valid
+    values depend on the configured model family.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    mode:
+      name: Mode
+      description: The Tuya work-mode enum value to send.
+      required: true
+      example: smart
+      selector:
+        select:
+          mode: dropdown
+          options:
+            # --- SLAM + Vision ---
+            - label: Auto (smart) clean [SLAM, Vision]
+              value: smart
+            # --- all families ---
+            - label: Return to charge [all]
+              value: chargego
+            # --- SLAM ---
+            - label: Zone clean [SLAM]
+              value: zone
+            - label: Go to position (pose) [SLAM]
+              value: pose
+            - label: Spot / partial clean [SLAM]
+              value: part
+            - label: Follow wall [SLAM]
+              value: wallfollow
+            - label: Select room [SLAM]
+              value: selectroom
+            - label: Quick map [SLAM]
+              value: quick_map
+            - label: Vacuum only [SLAM]
+              value: vac_only
+            # --- Vision + Random ---
+            - label: Stand by / stop [Vision, Random]
+              value: standby
+            # --- Vision ---
+            - label: Follow [Vision]
+              value: follow
+            - label: Manual drive [Vision]
+              value: manual
+            - label: Spot clean [Vision]
+              value: spot
+            - label: Single-room clean [Vision]
+              value: single
+            # --- Random ---
+            - label: Follow wall [Random]
+              value: wall_follow
+            - label: Spiral (spot) clean [Random]
+              value: spiral
+            - label: Random full clean [Random]
+              value: random
+            - label: Partial bow clean [Random]
+              value: partial_bow
+
+empty_dustbin:
+  name: Empty dustbin
+  description: >-
+    Trigger the auto-empty dock to empty the robot's onboard dustbin. On some
+    models the underlying datapoint is a momentary trigger rather than a
+    persistent switch. Only the SLAM family has a self-emptying dock; on Vision
+    and Random this call fails with a clear error.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+
+set_dp:
+  name: Set datapoint (raw)
+  description: >-
+    Advanced/debug: write a raw value to an arbitrary Tuya datapoint by id.
+    Intended for development and troubleshooting only. This is also how you
+    write settings the platforms only expose read-only — e.g. Random's water
+    control (dp "20", values closed/low/high) and Vision's mute (dp "215",
+    true/false).
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    dp:
+      name: Datapoint id
+      description: The Tuya datapoint id to write (as a string, e.g. "3").
+      required: true
+      example: "3"
+      selector:
+        text:
+    value:
+      name: Value
+      description: The value to write (string, integer, or boolean).
+      required: true
+      example: smart
+      selector:
+        object:
+
+# --- room awareness / zone management ---------------------------------------
+# Zones are polygons in the robot's own raw map-cell units. They are stored per
+# config entry in .storage/bobsweep_zones.<entry_id> (not in the config entry's
+# options, which would reload the integration and kill an in-flight capture).
+#
+# capture_point / start_zone_capture / stop_zone_capture need the robot to
+# report its position. No bObsweep datapoint has been verified to do that yet,
+# so today these fail with an explanatory error. delete_zone / export_zones /
+# import_zones only touch stored data and work regardless.
+
+capture_point:
+  name: Capture point
+  description: >-
+    Record the robot's current position into a scratch buffer under a label.
+    The low-level primitive behind zone capture: use it to note corners by hand
+    and assemble a polygon yourself, then feed it to Import zones. Fails with an
+    explanation if the robot cannot report a position.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    label:
+      name: Label
+      description: A name for this point, e.g. "kitchen NW corner".
+      required: true
+      example: kitchen NW corner
+      selector:
+        text:
+
+start_zone_capture:
+  name: Start zone capture
+  description: >-
+    Begin recording the robot's position, once per poll, into a named capture
+    session. Drive the robot around the whole room, then call Stop zone capture
+    to turn the samples into a zone.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    name:
+      name: Zone name
+      description: The room name to save the captured footprint under.
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
+stop_zone_capture:
+  name: Stop zone capture
+  description: >-
+    End the running capture session and derive a room footprint from the
+    sampled positions by density binning, then save it as a zone. Re-capturing
+    an existing name replaces its shape but keeps its segment id.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+
+delete_zone:
+  name: Delete zone
+  description: Delete a stored zone by name.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    name:
+      name: Zone name
+      description: The name of the zone to delete (case-insensitive).
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
+export_zones:
+  name: Export zones
+  description: >-
+    Return the whole zone document as service response data, for backup or
+    hand-editing. The output is exactly what Import zones accepts.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+
+import_zones:
+  name: Import zones
+  description: >-
+    Load zones from an exported document (or a bare list of zones, or a JSON
+    string of either). Zone polygons are in raw map-cell units. Invalid data is
+    rejected in full rather than partially applied.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    data:
+      name: Zone data
+      description: The exported zone document, a list of zones, or JSON text.
+      required: true
+      example: '{"version": 1, "zones": []}'
+      selector:
+        object:
+    replace:
+      name: Replace all
+      description: >-
+        Replace the entire stored zone set instead of merging. Merging (the
+        default) keeps existing zones and overwrites only same-named ones.
+      required: false
+      default: false
+      selector:
+        boolean:

@@ -1,0 +1,12 @@
+{
+  "domain": "bobsweep",
+  "name": "bObsweep (local)",
+  "codeowners": ["@davem98"],
+  "config_flow": true,
+  "documentation": "https://github.com/davem98/bobsweep-homeassistant",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/davem98/bobsweep-homeassistant/issues",
+  "requirements": ["tinytuya>=1.13.0"],
+  "version": "0.1.0"
+}
