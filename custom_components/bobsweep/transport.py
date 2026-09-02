@@ -21,15 +21,31 @@ both**, so a decoder must branch on the header byte rather than assume one::
 * `chk` is `(cmd + sum(data)) & 0xFF`. The header and length bytes are **not**
   part of the sum; that was confirmed by checking every framed value in the
   2026-09-01 live capture (33 frames, 33 checksums correct).
-* Total frame length is therefore `3 + len` for 0xAA and `4 + len` for 0xBB.
+* Total frame length is therefore `3 + len` for 0xAA and `4 + len` for the
+  two-header forms.
 
-**Inference, flagged as such:** the 0xBB byte at index 1 is read here as the
-high byte of a *big-endian 16-bit* length, which makes 0xBB simply "0xAA with a
-wider length field". Every 0xBB frame ever captured has `0x00` there, so this is
-consistent with the observed data but not proven by it. `encode_frame` refuses
-to emit a 0xBB frame whose length would not fit in 16 bits, and `decode_frame`
-accepts a non-zero high byte — if the inference is wrong, the only frames
-affected are ones longer than 255 bytes, which have never been observed.
+Three headers, three command tables
+-----------------------------------
+
+The header byte is not decoration: it **selects which command table the command
+byte is read against**. The vendor app defines three frame formats and one
+sender per table, and the byte at index 1 of the wider forms is a *version*
+byte (always written 0), not a length high byte:
+
+```
+cBasicTransCmdFormat         = {cHeader: 170 (0xAA), cLengthIdx: 1, cCmdIdx: 2, cDataIdx: 3}
+cExtendTransCmdFormat        = {cHeader: 171 (0xAB), cVersionIdx: 1, cLengthIdx: 2, cCmdIdx: 3, cDataIdx: 4}
+cBobCustomizedTransCMDFormat = {cHeader: 187 (0xBB), cVersionIdx: 1, cLengthIdx: 2, cCmdIdx: 3, cDataIdx: 4}
+```
+
+So 0xAA commands mean what the basic table says, 0xBB commands what the
+bObsweep-customized table says, and 0xAB what the extend table says. The tables
+overlap heavily in numbering and disagree on meaning, so a command byte alone is
+ambiguous. Length is a single byte in every form: the maximum payload is 254
+bytes, and there is no 16-bit length variant.
+
+0xAB has never been observed from this unit; it is decoded here so that it
+cannot be silently dropped if it ever appears.
 
 Encoding on the wire
 --------------------
@@ -40,6 +56,24 @@ encoding actually produced a valid frame and callers can discard hex-decoded
 values as local write traffic rather than mistaking an echo for a robot
 observation. (This is not theoretical: the whole DP 104 dead end was originally
 misread as a success because an echo was counted as data — see `position.py`.)
+
+Selected rooms (cmd 0x22) are an **ack, not a state**
+-----------------------------------------------------
+
+`eCleanSelectRoomsToApp` is emitted only when the app *commands* a room clean
+(`eCleanSelectRooms`, 0x12), echoing the same payload back. It is **not** part
+of the `eAll` report set — verified on hardware 2026-09-02, where two `eAll`
+dumps during a live room clean returned the no-go zones, no-mop zones, rotate
+angle and three empty area reports, and no 0x22 either time.
+
+The consequence for this integration: a room selection can only be observed by
+*listening* when the command goes past, and then remembered. Polling will never
+surface it. The payload is room **ids**, not geometry (`01 01 01` for a
+one-room job), and its exact layout is not yet pinned down.
+
+Note also that a room-targeted clean reports work mode `part` / status
+`part_clean` on this firmware — `selectroom` is in the app's enum table but is
+never emitted, the same way DP 119 is tabled but absent.
 
 Nothing here sends anything. `encode_frame` / `encode_frame_b64` exist as
 tested pure functions for a future writer; wiring a write path to DP 105 is a
@@ -60,19 +94,41 @@ from typing import Any, Iterable, Mapping, Sequence
 
 _LOGGER = logging.getLogger(__name__)
 
-#: The two framing headers seen on this firmware.
-HEADER_AA = 0xAA
-HEADER_BB = 0xBB
-HEADERS = (HEADER_AA, HEADER_BB)
+#: The three framing headers the vendor app defines, one per command table.
+HEADER_AA = 0xAA    # BASIC_TRANS_CMD
+HEADER_AB = 0xAB    # EXTEND_TRANS_CMD — defined by the app, never yet observed
+HEADER_BB = 0xBB    # BOB_CUSTOMIZED_TRANS_CMD
+HEADERS = (HEADER_AA, HEADER_AB, HEADER_BB)
 
-#: `BASIC_TRANS_CMD` entries this module understands. The full table was
-#: transcribed from the vendor app's bundle and is not published in this repo;
-#: only the ones actually decoded are named here so this is not mistaken for
-#: the authoritative list.
+#: Headers whose frames carry a version byte at index 1 and the length at index 2.
+_VERSIONED_HEADERS = (HEADER_AB, HEADER_BB)
+
+#: Command bytes this module understands. The full tables were transcribed from
+#: the vendor app's bundle and are not published in this repo; only the ones
+#: actually decoded are named here, so this is not mistaken for the
+#: authoritative list.
+#:
+#: **The header byte selects which table a command byte is read against**:
+#: 0xAA indexes the app's `BASIC_TRANS_CMD`, 0xBB indexes its
+#: `BOB_CUSTOMIZED_TRANS_CMD`. The two tables overlap heavily in numbering and
+#: disagree on meaning, so a command byte alone is ambiguous. Every distinct
+#: (header, command) pair observed on real hardware resolves in exactly the
+#: table its header names, and several 0xBB commands have no entry in the basic
+#: table at all. Reading a 0xBB command against the basic table yields a
+#: plausible, wrong answer — that mistake is how 0x12 (no-mop zones) was briefly
+#: taken for the room partition.
+
+# --- 0xAA frames: BASIC_TRANS_CMD ---
+CMD_CLEAN_SELECT_ROOMS = 0x12         # eCleanSelectRooms (18) — app commands a room clean
+CMD_CLEAN_SELECT_ROOMS_TO_APP = 0x22  # eCleanSelectRoomsToApp (34) — the robot's ack
 CMD_RESTRICTED_TO_APP = 0x24    # eRestrictedToApp (36) — the no-go rectangles
 CMD_AI_OBJECT_TO_BOT = 0x36     # eAiObjectToBot (54)
 CMD_AI_OBJECT_TO_APP = 0x37     # eAiObjectToAPP (55) — detected obstacles
-CMD_MAP_DATA = 0x39             # map raster frames
+
+# --- 0xBB frames: BOB_CUSTOMIZED_TRANS_CMD ---
+CMD_NO_MOP_ZONE_TO_APP = 0x12   # eNoMopZoneToApp (18) — no-mop rectangles,
+                                # same payload shape as CMD_RESTRICTED_TO_APP
+CMD_MAP_ROTATE_ANGLE_TO_APP = 0x31  # eMapRotateAngleToApp (49) — uint16 degrees
 
 #: `TuyaAiObjects.java` class table, transcribed key for key. Index 255 is the
 #: vendor's own "unknown", which is a real reported value, not a fallback
@@ -148,31 +204,32 @@ def encode_frame(
     length = 1 + len(payload)
     checksum = frame_checksum(cmd, payload)
 
+    if length > 0xFF:
+        raise ValueError(
+            f"payload of {len(payload)} bytes does not fit a DP 105 frame; the "
+            "length field is one byte in every framing the app defines"
+        )
     if header == HEADER_AA:
-        if length > 0xFF:
-            raise ValueError(
-                f"payload of {len(payload)} bytes does not fit an 0xAA frame; "
-                "use header=HEADER_BB"
-            )
         return bytes([HEADER_AA, length, cmd]) + payload + bytes([checksum])
-
-    if length > 0xFFFF:
-        raise ValueError(f"payload of {len(payload)} bytes does not fit an 0xBB frame")
-    return (
-        bytes([HEADER_BB, (length >> 8) & 0xFF, length & 0xFF, cmd])
-        + payload
-        + bytes([checksum])
-    )
+    # 0xAB / 0xBB: header, version (always 0), length, cmd, data, checksum
+    return bytes([header, 0x00, length, cmd]) + payload + bytes([checksum])
 
 
 def encode_frame_b64(
     cmd: int, data: bytes | Sequence[int] = b"", *, header: int = HEADER_AA
 ) -> str:
-    """Encode a frame the way it must go on the wire: base64 text.
+    """Encode a frame the way a tinytuya client must hand it over: base64 text.
 
     An earlier probe wrote DP 105 as *hex* and was malformed at the encoding
-    layer before the framing layer ever saw it. Anything that writes this
-    datapoint must go through here.
+    layer before the framing layer ever saw it. That was confirmed against real
+    hardware on 2026-09-02: a hex write produced only an echo, because the
+    string is base64-decoded on the way out and hex text decodes to garbage.
+
+    **Do not "fix" this to hex.** The vendor app does publish hex, and its own
+    source says so plainly — but the Tuya SDK hex-decodes a raw datapoint
+    before transmitting, while tinytuya base64-decodes it. Both clients put the
+    same bytes on the wire; only what you hand the library differs. Anything
+    here that writes this datapoint must go through this function.
     """
     return base64.b64encode(encode_frame(cmd, data, header=header)).decode("ascii")
 
@@ -194,10 +251,11 @@ def decode_frame(raw: bytes | bytearray | None) -> TransportFrame | None:
             return None
         length = buf[1]
         header_size = 2
-    elif buf[0] == HEADER_BB:
+    elif buf[0] in _VERSIONED_HEADERS:
         if len(buf) < 5:
             return None
-        length = (buf[1] << 8) | buf[2]
+        # buf[1] is a version byte, always 0 in practice; the length is buf[2].
+        length = buf[2]
         header_size = 3
     else:
         return None

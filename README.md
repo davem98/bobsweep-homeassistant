@@ -118,12 +118,15 @@ The integration can group the robot's position into rooms you teach it, and
 report the current one on `sensor.<name>_current_room`. The zone capture and
 management services are listed below.
 
-The honest caveat: **this robot does not reliably report where it is.** The
-datapoint that looked like a position trail (DP 104) was tested through a full
-15-minute cleaning job and returned nothing but the request echoed back, 26
-times out of 26. So by default `current_room` reads *unknown* — which is the
-truthful answer, and deliberately not the same state as `unmapped` (the
-robot's position is known, and it is in no room you have taught).
+The honest caveat: **this robot does not reliably report where it is, yet.**
+The datapoint that looks like a position trail (DP 104) *does* carry one — the
+robot returns `{"cmd":102,...,"point":[[x,y],...]}` with real coordinates — but
+so far it only does so while the vendor app's map screen is open and driving
+the request loop. Requests issued by this integration go unanswered, so the
+trail cannot be relied on as a live position source. By default `current_room`
+therefore reads *unknown* — the truthful answer, and deliberately not the same
+state as `unmapped` (which means the position is known and is in no room you
+have taught).
 
 There is one opt-in approximation, off by default, under the integration's
 **Configure** button:

@@ -2,32 +2,45 @@
 
 **Read this before touching anything else in the room-awareness stack.**
 
-**DP 104 is dead on this firmware. That is settled, with evidence.** It was the
-plan of record -- write a hex-encoded `{"cmd":104,"data":{"startno":N}}` request
-to `COMMAND_PATH_DATA`, read back a JSON trail of `[[x,y], ...]` points, take
-the last as "here". It does not work:
+**DP 104 carries a real position trail. The earlier "settled negative" was our
+own encoding bug.** (Corrected 2026-09-02, superseding the 2026-09-01 finding.)
 
-* A 15-minute packet capture ran across a **real,
-  active cleaning job** -- the robot moved, DP 5 read `smart`, and the clean
-  area (DP 16) and clean time (DP 17) both incremented throughout.
-* The request was re-issued every 30 s. DP 104 came back **26 times, and all 26
-  were the request echoed byte-for-byte identically**. Not one trail point,
-  ever, in any of them.
-* The earlier docked probe returned the same empty echo. So the "maybe it only
-  answers while cleaning" escape hatch has now been tested and closed.
+Observed live on the LAN, decoded, with real coordinates:
 
-This is a **negative result, not an open question**, and the earlier
-false-positive is exactly why it is written down this emphatically: a previous
-probe script reported success on DP 104 by matching its own echo. Do not
-re-litigate DP 104 without new evidence of a different *kind* (a firmware
-update, a different model). There is an independent explanation on record too:
-prior art on this product line's Tuya command set documents that the live
-cleaning path is P2P-only, while the map raster is a separate, cloud-only
-path -- consistent with DP 104 returning nothing here.
+```
+{"cmd":102,"data":{"pathid":814,"type":2,"count":488,"curnums":6,"startno":482,
+                   "point":[[810,539],[796,535],[750,493],[718,461],[660,437],[594,411]]}}
+```
 
-`PathDataPositionSource` below is kept **as a record of what was tried**, not as
-a candidate. It is unreachable: `PATH_DATA_VERIFIED` is False and there is no
-path that flips it at runtime.
+So the reply shape is no longer a guess: the robot answers a
+`{"cmd":104,"data":{"startno":N}}` request with a `cmd:102` object whose points
+live under `data.point` -- **singular**, which is not a key the earlier decoder
+looked for. `count` is the total trail length so far, `startno` the index this
+batch begins at, and `curnums` its length, so the feed is incremental and
+resumable.
+
+Why it looked dead: the request was **hex**-encoded. tinytuya base64-decodes a
+raw datapoint, so a hex string went out as garbage bytes and the robot never
+saw a valid request. The "26 reads, 26 echoes" were our own mangled writes
+bouncing back. The same bug independently broke every DP 105 getter on
+2026-09-02 until it was found; the vendor app publishes hex because the Tuya
+*SDK* hex-decodes, which is a different client convention, not the wire format.
+
+**What is still unresolved: we cannot yet *elicit* the trail.** Correctly
+base64-encoded requests (`startno` 0, 1, 478, 900, 100000) sent during a real,
+active clean drew no reply -- verified in a passive capture that confirms our
+requests reached the wire intact. The vendor app calls the native
+`startMapLister()` and `initStartNo()` before its request loop, and that map
+session is the part not yet replicated.
+
+What does work today is **passive harvesting**: when the app's map screen is
+driving the loop, the robot's `cmd:102` replies are broadcast as ordinary DP 104
+updates and anything listening on the LAN sees the whole trail.
+
+`PathDataPositionSource` below therefore stays unreachable, but the reason has
+changed: not "this datapoint is empty" -- it demonstrably is not -- but "we
+cannot make it answer on demand, so a source built on it would silently produce
+nothing while claiming to be available".
 
 So position lives behind this interface and nowhere else. Zones, the room
 classifier, the capture services, staleness detection and the segment API are
@@ -52,6 +65,8 @@ position path can be exercised offline.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import time
@@ -219,43 +234,80 @@ class StaticPositionSource(PositionSource):
         )
 
 
-# --- DP 104: TRIED, FAILED, CLOSED -------------------------------------------
-# Everything from here to `AiObjectSightingPositionSource` is a *record of a
-# dead end*, deliberately kept so the next person does not spend an afternoon
-# re-discovering it. It is not a candidate, not a work in progress, and not
-# something to enable. See the module docstring for the evidence.
+# --- DP 104: REAL, BUT NOT YET ON DEMAND -------------------------------------
+# The datapoint carries a genuine position trail -- that is confirmed against
+# live hardware, with decoded coordinates. What is missing is a way to make the
+# robot answer *our* request; today the trail only flows while the vendor app's
+# map session drives it. Everything here is therefore correct-but-unreachable
+# code, kept ready for the day the map session is replicated. See the module
+# docstring.
 
-#: **Do not flip this.** It is not a feature toggle awaiting a probe; it is the
-#: switch that keeps a proven-dead code path unreachable. DP 104 was tested
-#: across a full 15-minute active clean and returned the same echoed request 26
-#: times out of 26, with zero trail points. Turning this on would give the room
-#: classifier a source that produces nothing while claiming to be available,
-#: which is strictly worse than having no source.
+#: **Still do not flip this -- but not for the reason it used to say.** The
+#: datapoint is real and its replies decode correctly. What is unverified is
+#: whether we can *elicit* one: correctly encoded requests during an active
+#: clean drew no answer, because the vendor app establishes a native map
+#: session (`startMapLister`) first. Enabling this would give the room
+#: classifier a source that produces nothing while claiming to be available.
+#: Flip it only once a request of ours has actually been answered.
 PATH_DATA_VERIFIED = False
 
 #: The evidence, in one line, so it travels with the error messages.
 PATH_DATA_EVIDENCE = (
-    "26/26 DP 104 reads during a 15-minute active clean were the request "
-    "echoed back byte-identically, with zero trail points "
-    "(packet capture during a live cleaning cycle, 2026-09-01)"
+    "DP 104 does carry a position trail (cmd:102 with data.point, confirmed "
+    "2026-09-02), but it only flows while the vendor app's map session drives "
+    "it; our own correctly-encoded startno requests go unanswered"
 )
 
-#: The scale the app appears to apply to path-trail coordinates. A GUESS, and
-#: isolated here so correcting it is a one-line change. See
-#: `decode_path_points`.
-PATH_SCALE = 0.1
+#: Trail coordinates are used **as-is**, in the same map-cell frame as the
+#: DP 105 no-go rectangles and AI-object sightings.
+#:
+#: This was 0.1 -- a guess taken from the app's *display* transform. Real trail
+#: points settle it: an observed batch runs [[872,560] ... [594,411]], while the
+#: no-go rectangles span roughly x -1076..2468 and sightings reach (536,948).
+#: Scaling by 0.1 would squeeze the entire path into a ~90x60 box in the corner
+#: of a map thousands of cells wide, which is not where the robot was. The 0.1
+#: belongs to rendering, exactly as already documented for AI-object coordinates.
+PATH_SCALE = 1.0
 
 
 def encode_path_request(startno: int = 0) -> str:
-    """Build the DP 104 request payload the vendor app appears to send.
+    """Build the DP 104 request payload, base64-encoded.
 
-    UNVERIFIED. The app writes a hex-encoded JSON object; `startno` is the index
-    into the path trail to start streaming from, so 0 asks for the whole thing.
-    Kept as a pure function so a probe script can call it without instantiating
-    anything.
+    `startno` is the index into the path trail to resume from; the robot replies
+    with `curnums` points beginning there and reports the running `count`.
+
+    **Base64, not hex.** The vendor app emits hex because the Tuya SDK
+    hex-decodes a raw datapoint before transmitting; tinytuya base64-decodes it.
+    Both put identical bytes on the wire. Sending hex from a tinytuya client
+    produces garbage that the robot silently discards -- which is precisely how
+    DP 104 was mistakenly written off as empty.
     """
     body = json.dumps({"cmd": 104, "data": {"startno": startno}}, separators=(",", ":"))
-    return body.encode("utf-8").hex()
+    return base64.b64encode(body.encode("utf-8")).decode("ascii")
+
+
+def _b64_to_text(text: str) -> str | None:
+    """base64 -> JSON text, or None if it is not base64-wrapped JSON."""
+    try:
+        decoded = base64.b64decode(text + "=" * (-len(text) % 4), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    try:
+        out = decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return out if out.lstrip().startswith(("{", "[")) else None
+
+
+def _hex_to_text(text: str) -> str | None:
+    """hex -> JSON text, or None. Only the vendor app writes this form."""
+    if not text or len(text) % 2 or not all(c in "0123456789abcdefABCDEF" for c in text):
+        return None
+    try:
+        out = bytes.fromhex(text).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return out if out.lstrip().startswith(("{", "[")) else None
 
 
 def decode_path_points(raw: Any) -> list[tuple[float, float]]:
@@ -280,11 +332,13 @@ def decode_path_points(raw: Any) -> list[tuple[float, float]]:
         payload = payload.decode("utf-8", "ignore")
     if isinstance(payload, str):
         text = payload.strip()
-        if text and all(c in "0123456789abcdefABCDEF" for c in text) and not len(text) % 2:
-            try:
-                text = bytes.fromhex(text).decode("utf-8", "ignore")
-            except ValueError:
-                return []
+        # Robot-originated values arrive base64-wrapped; try that first, then
+        # hex, and fall through to treating the string as bare JSON.
+        for decoder in (_b64_to_text, _hex_to_text):
+            decoded = decoder(text)
+            if decoded is not None:
+                text = decoded
+                break
         try:
             payload = json.loads(text)
         except (ValueError, TypeError):
@@ -297,7 +351,9 @@ def decode_path_points(raw: Any) -> list[tuple[float, float]]:
         data = payload.get("data")
         for holder in (data, payload):
             if isinstance(holder, dict):
-                for key in ("path", "points", "pathData", "data"):
+                # "point" (singular) is what the robot actually sends; the
+                # others are kept as tolerated aliases.
+                for key in ("point", "path", "points", "pathData", "data"):
                     value = holder.get(key)
                     if isinstance(value, list):
                         candidates = value
