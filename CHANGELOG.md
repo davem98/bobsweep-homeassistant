@@ -19,22 +19,20 @@ families are derived from the vendor app's own datapoint tables and remain
 
 ### Fixed
 - **Room id 0 could not be named.** The service schema required an id of 1 or
-  more, but 0 is a real room — the reference robot's own schedule store names
-  room 0 "classroom".
+  more, but 0 is a valid room id, which left that room permanently unnameable.
 - **The declared minimum Home Assistant version was wrong.** `hacs.json` said
   2024.8.0 while the code needs `VacuumActivity`, which arrived in 2025.1. An
   install on an older core would have been allowed and would have failed at
   import.
 
 ### Protocol notes
-- The schedule weekday bitmask is **bit 0 = Monday** through bit 6 = Sunday.
-  Measured, not assumed: a schedule saved for Wednesday alone came back as
-  `0x04`. This **contradicts** the vendor app's own JavaScript weekday enum
-  (Sunday = 0), which belongs to an older per-day schedule the robot does not
-  use here — the reason it had to be measured.
+- The schedule weekday bitmask is **bit 0 = Monday** through bit 6 = Sunday,
+  determined on hardware. This differs from the weekday numbering the vendor
+  app uses elsewhere, so it cannot safely be inferred — anyone implementing
+  against this frame should measure it rather than assume.
 - Two of the four trailing bytes on a schedule entry are now identified: byte 1
-  is the vacuum power and byte 2 the mop intensity, on the app's own scales.
-  Bytes 0 and 3 remain unknown and the field is still exposed as raw hex.
+  is the vacuum power and byte 2 the mop intensity. Bytes 0 and 3 remain
+  unknown, so the field is still exposed as raw hex as well.
 
 ## [0.3.0] — 2026-09-06
 
@@ -57,7 +55,8 @@ families are derived from the vendor app's own datapoint tables and remain
 ### Security
 - Every write to the transparent command datapoint is checked against an
   allowlist of the vendor app's own read-only queries immediately before it
-  goes out. A guessed frame on that datapoint once started an unwanted job.
+  goes out. That same datapoint also carries destructive commands — erasing the
+  saved map, starting a job — so an unrecognised frame is never sent.
 
 ## [0.2.0] — 2026-09-05
 
