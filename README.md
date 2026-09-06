@@ -115,8 +115,8 @@ rather than showing up permanently unknown.
   integration asks once at startup, and again whenever you call
   `bobsweep.refresh_robot_info`. Saved maps lists each stored floor map's id
   and name; Schedules lists the robot's stored cleaning schedules with their
-  times, target room ids and names; Mop cloth dirt is a percentage. All three
-  read *unknown* until the robot answers.
+  weekdays, times, target room ids, vacuum power, mop intensity and names; Mop
+  cloth dirt is a percentage. All three read *unknown* until the robot answers.
 - **Binary sensors**: self-emptying (SLAM only), charging, docked, problem
   (with error attributes), mopping, vacuuming. Each is only created when the
   configured family actually has the underlying datapoint(s) or status value
@@ -187,10 +187,11 @@ from the single-room entries only. A schedule covering two rooms ("hall and
 kitchen" for ids 3 and 2) names a *pair*, and which half is which is genuinely
 unknowable from the data, so those are deliberately not split.
 
-Anything left unnamed you can name yourself with `bobsweep.set_room_name`; your
-names are stored by this integration, survive restarts, and win over the
-derived ones. The result appears as a `room_names` attribute on the Schedules
-and Selected rooms sensors.
+Anything left unnamed you can name yourself with `bobsweep.set_room_name`, and
+undo with `bobsweep.clear_room_name`; your names are stored by this
+integration, survive restarts, and win over the derived ones. The result
+appears as a `room_names` attribute on the Schedules and Selected rooms
+sensors.
 
 ## Services
 
@@ -200,6 +201,7 @@ Registered as entity services on the `vacuum` domain (`integration: bobsweep`):
 |---|---|
 | `bobsweep.refresh_robot_info` | Re-read the robot's saved maps, schedules, room names and mop-cloth status. Read-only; done once automatically at startup. |
 | `bobsweep.set_room_name` | Give a room id a name of your own, overriding anything derived from the robot's schedules. See [Room names](#room-names). |
+| `bobsweep.clear_room_name` | Forget a name you set, so the robot-derived one shows again. |
 | `bobsweep.set_mode` | Write a raw Tuya work-mode value directly (zone clean, follow-wall, select-room, quick-map, vacuum-only, etc.) — reaches modes the standard vacuum start/pause/stop controls don't expose. |
 | `bobsweep.empty_dustbin` | Trigger the auto-empty dock. |
 | `bobsweep.set_dp` | Advanced/debug: write an arbitrary raw Tuya datapoint by id. Intended for development and troubleshooting, not routine use. |

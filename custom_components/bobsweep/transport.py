@@ -134,6 +134,10 @@ CMD_SAVED_MAP_NAMES_TO_APP = 0x18   # eGetSavedMapNameToApp (24) — saved map n
 CMD_MAP_ROTATE_ANGLE_TO_APP = 0x31  # eMapRotateAngleToApp (49) — uint16 degrees
 CMD_MOP_CLOTH_DIRTY_TO_APP = 0x39   # eMopClothAssemDirtyToApp (57) — [ver, pct]
 
+#: Weekday names for a schedule's `days_mask`, in bit order: bit 0 is Monday.
+#: Determined by experiment, not from the vendor app — see `ScheduleEntry`.
+WEEKDAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
 #: `TuyaAiObjects.java` class table, transcribed key for key. Index 255 is the
 #: vendor's own "unknown", which is a real reported value, not a fallback
 #: invented here.
@@ -822,36 +826,35 @@ class ScheduleEntry:
     The only field here that is *interpreted* rather than read is `time`. In
     particular:
 
-    * `days_mask` is seven meaningful bits, and **which bit is which weekday is
-      unverified**. Every schedule on the reference unit is 0x7F (all seven
-      days), so the real frames cannot distinguish Monday-first from
-      Sunday-first, nor bit 0 from bit 6. Do not render a weekday list from this
-      until a partial-week schedule has been captured; expose the mask.
-
-      The leading hypothesis is **bit 0 = Sunday** through bit 6 = Saturday:
-      the vendor app declares exactly one weekday enum,
-      ``WEEK_DAYS={SUNDAY:0,...,SATURDAY:6}``, and uses it everywhere it
-      indexes a day. Suggestive, not proof — every use of it in the app's
-      JavaScript belongs to the *older* one-time-per-day cloud schedule, while
-      these named schedules are parsed in the app's native layer, which is
-      where the bitmask is actually built. Settling it costs one experiment:
-      save a schedule for a single weekday in the app, re-read the getter, and
-      see which bit is set.
+    * `days_mask` is seven bits, **bit 0 = Monday** through bit 6 = Sunday.
+      Established by experiment on 2026-09-06: a schedule saved in the vendor
+      app for Wednesday alone came back as `0x04` (bit 2), which is Wednesday
+      only under a Monday-first reading. Note this **contradicts the app's own
+      JavaScript**, whose single weekday enum is
+      ``WEEK_DAYS={SUNDAY:0,...,SATURDAY:6}`` — that enum drives the older
+      one-time-per-day cloud schedule, not this frame, which the app builds
+      natively. The five all-week schedules (`0x7F`) fit either reading and
+      could never have settled it.
     * `unknown_tail` is the four bytes between the room list and the name
-      length, kept as hex because nothing is known about them. On every real
-      entry they are `00020001`. Candidates floated in the field notes: fan
-      speed, water level, repeat count, map id (the trailing `01` matches the
-      current map id) — all guesses, none tested.
+      length. Two of the four are now known, from a controlled comparison on
+      2026-09-06: schedules reading "Vacuum: Medium | Mop: Off" in the app
+      carry `00 02 00 01`, and one saved as "Vacuum: Medium | Mop: Medium"
+      carried `00 02 02 01`. So byte 1 is the vacuum power and byte 2 the mop
+      intensity, on the app's own scales (mop Off=0, Medium=2; vacuum
+      Medium=2). Bytes 0 and 3 did not move in that experiment and remain
+      unknown; the trailing `01` matching the current map id is still only a
+      guess. The whole field stays exposed as hex because a partial decode is
+      not worth a lossy typed API.
     """
 
     enabled: bool
-    #: 7 bits, one per weekday. **Bit→weekday order is UNVERIFIED** (see above).
+    #: 7 bits, one per weekday, **bit 0 = Monday** ... bit 6 = Sunday.
     days_mask: int
     hour: int
     minute: int
     room_ids: tuple[int, ...]
     name: str
-    #: Hex of the 4 undecoded bytes that follow the room list.
+    #: Hex of the 4 trailing bytes: [?, vacuum power, mop intensity, ?].
     unknown_tail: str
 
     @property
@@ -859,16 +862,50 @@ class ScheduleEntry:
         """The start time as `HH:MM`."""
         return f"{self.hour:02d}:{self.minute:02d}"
 
+    @property
+    def days(self) -> tuple[str, ...]:
+        """The weekdays this schedule runs on, Monday first.
+
+        Empty when no bit is set. `("mon", ..., "sun")` for the all-week
+        `0x7F` that every stock schedule uses.
+        """
+        return tuple(
+            day
+            for index, day in enumerate(WEEKDAYS)
+            if self.days_mask & (1 << index)
+        )
+
     def as_dict(self) -> dict[str, Any]:
         """Attribute-friendly form."""
         return {
             "enabled": self.enabled,
             "days_mask": self.days_mask,
+            "days": list(self.days),
             "time": self.time,
             "room_ids": list(self.room_ids),
             "name": self.name,
+            "vacuum_power": self.vacuum_power,
+            "mop_intensity": self.mop_intensity,
             "unknown_tail": self.unknown_tail,
         }
+
+    @property
+    def vacuum_power(self) -> int | None:
+        """Byte 1 of the tail: the vacuum power level, or None if unreadable."""
+        return self._tail_byte(1)
+
+    @property
+    def mop_intensity(self) -> int | None:
+        """Byte 2 of the tail: the mop intensity, or None if unreadable."""
+        return self._tail_byte(2)
+
+    def _tail_byte(self, index: int) -> int | None:
+        """One byte of `unknown_tail`, or None when the tail is not 4 bytes."""
+        try:
+            raw = bytes.fromhex(self.unknown_tail)
+        except ValueError:
+            return None
+        return raw[index] if len(raw) == 4 else None
 
 
 def decode_saved_maps(data: bytes) -> list[SavedMap] | None:
