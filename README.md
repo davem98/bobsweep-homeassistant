@@ -82,9 +82,8 @@ rather than showing up permanently unknown.
   diagnostic), last clean time (min, not marked diagnostic), status (raw DP
   string), **fault** (the current fault by name, `none` when healthy), and
   **current room** (see [Room awareness](#room-awareness)) — plus
-  family-specific extras: **water control** and **dustbin / water tank** status
-  (currently modelled for Random only), **cliff sensor** (currently modelled for
-  Vision only, raw value).
+  family-specific extras: **dustbin / water tank** status (Random only) and
+  **cliff sensor** (Vision only, raw value).
 
   **Detected obstacles** (SLAM only) is the count of objects the robot's camera
   has found during the current job, with the list on an `objects` attribute as
@@ -107,7 +106,17 @@ rather than showing up permanently unknown.
   acknowledged when a room-targeted clean was started from the app. The robot
   emits this once per job and never reports it on a poll, which is why the
   coordinator listens. The payload layout is not fully pinned down yet; the
-  raw bytes and the decoder's guess at the layout are on the attributes.
+  raw bytes and the decoder's guess at the layout are on the attributes. Where
+  a room's name is known it is shown alongside the id — see
+  [Room names](#room-names).
+
+  **Saved maps**, **Schedules** and **Mop cloth dirt** (SLAM only, diagnostic)
+  come from the robot's own read-only queries rather than from datapoints. The
+  integration asks once at startup, and again whenever you call
+  `bobsweep.refresh_robot_info`. Saved maps lists each stored floor map's id
+  and name; Schedules lists the robot's stored cleaning schedules with their
+  times, target room ids and names; Mop cloth dirt is a percentage. All three
+  read *unknown* until the robot answers.
 - **Binary sensors**: self-emptying (SLAM only), charging, docked, problem
   (with error attributes), mopping, vacuuming. Each is only created when the
   configured family actually has the underlying datapoint(s) or status value
@@ -165,12 +174,32 @@ There is one opt-in approximation, off by default, under the integration's
   The *Detected obstacles* sensor works either way — this setting only controls
   whether obstacle positions are also used to guess the room.
 
+## Room names
+
+The robot will not tell you what a room is called if you ask it — the vendor
+app has no such command, and the map data it sends carries no names. But it
+does hand over its **stored cleaning schedules**, and each one carries both the
+room ids it targets and the name its owner typed. A schedule for a single room
+is therefore the robot naming that room.
+
+The integration reads those schedules at startup and derives an id → name map
+from the single-room entries only. A schedule covering two rooms ("hall and
+kitchen" for ids 3 and 2) names a *pair*, and which half is which is genuinely
+unknowable from the data, so those are deliberately not split.
+
+Anything left unnamed you can name yourself with `bobsweep.set_room_name`; your
+names are stored by this integration, survive restarts, and win over the
+derived ones. The result appears as a `room_names` attribute on the Schedules
+and Selected rooms sensors.
+
 ## Services
 
 Registered as entity services on the `vacuum` domain (`integration: bobsweep`):
 
 | Service | Purpose |
 |---|---|
+| `bobsweep.refresh_robot_info` | Re-read the robot's saved maps, schedules, room names and mop-cloth status. Read-only; done once automatically at startup. |
+| `bobsweep.set_room_name` | Give a room id a name of your own, overriding anything derived from the robot's schedules. See [Room names](#room-names). |
 | `bobsweep.set_mode` | Write a raw Tuya work-mode value directly (zone clean, follow-wall, select-room, quick-map, vacuum-only, etc.) — reaches modes the standard vacuum start/pause/stop controls don't expose. |
 | `bobsweep.empty_dustbin` | Trigger the auto-empty dock. |
 | `bobsweep.set_dp` | Advanced/debug: write an arbitrary raw Tuya datapoint by id. Intended for development and troubleshooting, not routine use. |

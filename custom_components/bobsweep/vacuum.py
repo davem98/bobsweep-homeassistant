@@ -33,6 +33,7 @@ from . import BobsweepConfigEntry
 from .const import DEFAULT_NAME, DOMAIN, FAMILIES
 from .coordinator import BobsweepCoordinator
 from .faults import decode_faults
+from .room_names import MAX_ROOM_NAME_LENGTH, RoomNameError
 from .zone_services import async_register_zone_services
 from .zones import ZoneError, resolve_segment_boxes, segment_specs
 
@@ -64,6 +65,9 @@ SEGMENTS_SUPPORTED = Segment is not None and hasattr(
 SERVICE_SET_MODE = "set_mode"
 SERVICE_EMPTY_DUSTBIN = "empty_dustbin"
 SERVICE_SET_DP = "set_dp"
+SERVICE_REFRESH_ROBOT_INFO = "refresh_robot_info"
+SERVICE_SET_ROOM_NAME = "set_room_name"
+SERVICE_CLEAR_ROOM_NAME = "clear_room_name"
 
 
 def coerce_dp_value(value: Any) -> Any:
@@ -451,6 +455,45 @@ class BobsweepVacuum(CoordinatorEntity[BobsweepCoordinator], StateVacuumEntity):
         """Custom service: raw DP passthrough for debugging."""
         await self.coordinator.async_set_dp(str(dp), value)
 
+    async def async_refresh_robot_info_service(self) -> None:
+        """Custom service: re-run the read-only getter sweep.
+
+        Read-only by construction — the only frames it can send are the vendor
+        app's own named getters (see `coordinator.async_refresh_robot_info`).
+        """
+        if self._spec.dp_transportation is None:
+            raise ServiceValidationError(
+                f"The {self._spec.key} bObsweep family has no transportation "
+                "datapoint, so there is nothing to query"
+            )
+        await self.coordinator.async_refresh_robot_info()
+
+    async def async_set_room_name_service(self, room_id: int, name: str) -> None:
+        """Custom service: persist a user-supplied name for one room id."""
+        cleaned = name.strip()
+        if not cleaned:
+            raise ServiceValidationError("A room name cannot be empty.")
+        try:
+            await self.coordinator.room_name_store.async_set(int(room_id), cleaned)
+        except RoomNameError as err:
+            raise ServiceValidationError(str(err)) from err
+        # Sensors derive their state from the coordinator, so push the change
+        # out rather than waiting for the next robot message.
+        self.coordinator.async_update_listeners()
+
+    async def async_clear_room_name_service(self, room_id: int) -> None:
+        """Custom service: drop a user-supplied name for one room id.
+
+        Clearing is not the same as setting an empty name: it removes the
+        override, so any name the robot's own schedules imply for that room
+        becomes visible again.
+        """
+        try:
+            await self.coordinator.room_name_store.async_delete(int(room_id))
+        except RoomNameError as err:
+            raise ServiceValidationError(str(err)) from err
+        self.coordinator.async_update_listeners()
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
@@ -486,6 +529,29 @@ async def async_setup_entry(
             vol.Required("value"): coerce_dp_value,
         },
         "async_set_dp_service",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_REFRESH_ROBOT_INFO,
+        {},
+        "async_refresh_robot_info_service",
+    )
+    platform.async_register_entity_service(
+        SERVICE_SET_ROOM_NAME,
+        {
+            # min=0: room 0 is a real id, not a sentinel. The reference unit's
+            # own schedule store names room 0 "classroom".
+            vol.Required("room_id"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+            vol.Required("name"): vol.All(
+                cv.string, vol.Length(min=1, max=MAX_ROOM_NAME_LENGTH)
+            ),
+        },
+        "async_set_room_name_service",
+    )
+    platform.async_register_entity_service(
+        SERVICE_CLEAR_ROOM_NAME,
+        {vol.Required("room_id"): vol.All(vol.Coerce(int), vol.Range(min=0))},
+        "async_clear_room_name_service",
     )
 
     # Zone capture / management services (bobsweep.capture_point, ...).

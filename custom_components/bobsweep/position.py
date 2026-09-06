@@ -9,12 +9,15 @@ reads it passively.** The robot emits `cmd:102` replies -- `{"cmd":102,"data":
 in practice means whenever the vendor app's map screen is open. Points are
 unscaled map cells in the same frame as DP 105 geometry; the feed is
 incremental (`startno` + `curnums`, running `count`) and the `pathid` changes
-per job. **Eliciting the trail ourselves is still unproven** -- writes of DP 106
-and of `startno` requests, in every order, with the robot docked and the app
-closed, drew no reply on 2026-09-05, consistent with the robot only ever
-emitting *new* points. So `PathTrailTracker` and `PathTrailPositionSource`
-below **never write DP 104**: they listen, accumulate, and go quiet when the
-feed does. A live-clean elicitation test is still outstanding.
+per job. **We cannot elicit the trail ourselves, and that is settled.** Writes
+of DP 106 and of `startno` requests, in every order, drew nothing but echoes --
+with the robot docked and again during a live clean with the app closed.
+Instrumenting the vendor app explained it: the app asks over the cloud, its
+request bytes are byte-identical to ours, and the robot honours the cloud copy
+while ignoring the local one. The channel is the discriminator, so there is no
+better-formed local request to find. `PathTrailTracker` and
+`PathTrailPositionSource` below therefore **never write DP 104**: they listen,
+accumulate, and go quiet when the feed does.
 
 So position lives behind this interface and nowhere else. Zones, the room
 classifier, the capture services, staleness detection and the segment API are
@@ -212,22 +215,27 @@ class StaticPositionSource(PositionSource):
 
 # --- DP 104: the path trail (real, decoded, read passively) -------------------
 # The datapoint carries a genuine position trail and the decoder below is
-# verified against live captures. Nothing here writes it: see the module
-# docstring for why elicitation is still unproven.
+# verified against live captures. Nothing here writes it -- and that is now a
+# conclusion rather than a caution; see below.
 
-#: Retired. It used to gate `PathDataPositionSource`, which no longer exists --
-#: the trail source is built from observed values instead, so nothing gates.
-#: The name is kept, still False, because it now means exactly one narrower
-#: thing: **we have never made the robot answer a request of ours.** Passive
-#: reception is verified; on-demand elicitation is not.
+#: Retired as a gate -- it used to guard a `PathDataPositionSource` that no
+#: longer exists, and the trail source is built from observed values instead.
+#: The name is kept, still False, because it now records a settled fact rather
+#: than a pending experiment: **the robot will not answer a trail request that
+#: arrives over the LAN.** Requests were sent while docked and during a live
+#: clean, alone and paired with the map-request datapoint, in both orders, and
+#: drew nothing but echoes. Instrumenting the vendor app showed why: it asks
+#: over the cloud, its request bytes are *identical* to ours, and the robot
+#: honours the cloud copy while ignoring the local one. The channel is the
+#: discriminator, so there is no better-formed local request left to find.
 PATH_DATA_VERIFIED = False
 
 #: The evidence, in one line, so it travels with the error messages.
 PATH_DATA_EVIDENCE = (
     "DP 104 carries a real position trail (cmd:102 with data.point) and is read "
     "passively; it flows while a map session is running (in practice, the vendor "
-    "app's map screen). Requests of ours have never been answered, so nothing "
-    "here writes the datapoint"
+    "app's map screen). The robot answers those requests only over the cloud, "
+    "never on the LAN, so nothing here writes the datapoint"
 )
 
 #: How long a trail point stays usable as "where the robot is", in seconds.

@@ -73,8 +73,14 @@ from .const import (
     resolve_family,
 )
 from .position import PathTrailTracker, PositionSource, create_position_source
+from .room_names import RoomNameStore
 from .rooms import RoomTracker
-from .transport import AiObjectTracker, RoomSelectionTracker
+from .transport import (
+    GETTER_FRAMES,
+    AiObjectTracker,
+    RobotInfoTracker,
+    RoomSelectionTracker,
+)
 from .zones import ZoneStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,6 +130,18 @@ ERROR_LOG_INTERVAL_SECONDS = 60
 # ~25 s; this is a backstop against hanging a config-entry setup forever.
 COMMAND_TIMEOUT_SECONDS = 30
 THREAD_JOIN_TIMEOUT_SECONDS = 5.0
+
+# Gap between two consecutive read-only getter writes in
+# `async_refresh_robot_info`. The robot answers a DP 105 getter asynchronously
+# on the push channel, and firing the whole set back-to-back gets the replies
+# coalesced (or dropped) rather than delivered one per frame.
+GETTER_GAP_SECONDS = 1.5
+# How long after setup the one automatic getter sweep runs. The entry has just
+# been polled by `async_config_entry_first_refresh()` and these getters are pure
+# extra traffic that nothing is waiting on, so they wait for the entry to settle
+# -- platforms forwarded, entities added, the first push burst absorbed --
+# rather than competing with setup for the single I/O thread.
+STARTUP_ROBOT_INFO_DELAY_SECONDS = 10.0
 
 
 class _TransportError(Exception):
@@ -219,6 +237,16 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ai_object_position=self.ai_object_position,
             path_trail_tracker=self.trail,
         )
+        # Saved maps, schedules, mop-cloth status and the room names that can be
+        # inferred from single-room schedule names. Fed the per-message DP 105
+        # value like the other trackers; filled in by the reply to a read-only
+        # getter (see `async_refresh_robot_info`).
+        self.robot_info: RobotInfoTracker | None = (
+            RobotInfoTracker() if self.spec.dp_transportation is not None else None
+        )
+        # User overrides for room names, persisted per entry. `async_setup()`
+        # loads them alongside the zones.
+        self.room_name_store = RoomNameStore(hass, entry.entry_id)
         self.rooms = RoomTracker(
             hass,
             zone_store=self.zone_store,
@@ -248,13 +276,45 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # one `rooms.async_update()` task per message.
         self._pending_room_snapshot: dict[str, Any] | None = None
         self._room_task: asyncio.Task[None] | None = None
+        # Serialises `async_refresh_robot_info` so two overlapping calls (the
+        # automatic startup sweep and a user service call, say) cannot interleave
+        # their frames and desynchronise reply from request.
+        self._robot_info_lock = asyncio.Lock()
+        # Handle for the one deferred startup sweep, so a fast reload cannot
+        # leave a callback firing against a torn-down entry.
+        self._robot_info_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------ setup
 
     async def async_setup(self) -> None:
         """Load persisted state and start the listener thread."""
         await self.zone_store.async_load()
+        await self.room_name_store.async_load()
         self._start_thread()
+        self._schedule_startup_robot_info()
+
+    def _schedule_startup_robot_info(self) -> None:
+        """Queue the one automatic getter sweep, `STARTUP_ROBOT_INFO_DELAY_SECONDS` out.
+
+        Deliberately fire-and-forget: `async_setup()` runs before
+        `async_config_entry_first_refresh()`, and nothing about reading the
+        robot's saved maps may block or fail setup. The handle is kept so
+        `async_stop()` can cancel it -- a reload that happens inside the delay
+        window must not leave a callback pointing at a dead entry.
+        """
+        if self.robot_info is None:
+            return
+
+        async def _deferred() -> None:
+            try:
+                await asyncio.sleep(STARTUP_ROBOT_INFO_DELAY_SECONDS)
+                await self.async_refresh_robot_info()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a background task must not shout
+                _LOGGER.debug("bObsweep: startup robot-info sweep failed", exc_info=True)
+
+        self._robot_info_task = self.hass.async_create_task(_deferred())
 
     def _start_thread(self) -> None:
         """Start the single thread that owns the device. Idempotent."""
@@ -283,6 +343,13 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         self._stopping = True
         self._stop.set()
+
+        # Before anything else: kill the deferred getter sweep. It is the one
+        # piece of state that outlives a fast reload if left alone.
+        info_task = self._robot_info_task
+        self._robot_info_task = None
+        if info_task is not None and not info_task.done():
+            info_task.cancel()
 
         thread = self._thread
         self._thread = None
@@ -603,6 +670,13 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             value = dps.get(self.spec.dp_transportation)
             if value is not None:
                 self.room_selection.ingest(value)
+        # ...and to the robot-info tracker, which owns the replies to the
+        # read-only getters `async_refresh_robot_info` sends. Same rule: it
+        # ignores every frame it does not own, so ordering does not matter.
+        if self.robot_info is not None and self.spec.dp_transportation is not None:
+            value = dps.get(self.spec.dp_transportation)
+            if value is not None:
+                self.robot_info.ingest(value)
         # --- end per-DP consumers ---------------------------------------
 
         snapshot = dict(self._dps)
@@ -660,6 +734,74 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Set multiple datapoints on the device and refresh state."""
         await self._async_command("set_multi", dps)
         await self.async_request_refresh()
+
+    # --- read-only getters ---------------------------------------------------
+
+    async def async_refresh_robot_info(self) -> None:
+        """Ask the robot for its maps, schedules and settings (read-only getters).
+
+        **Safety.** DP 105 is a transparent command channel: erasing the saved
+        map, merging rooms and starting a cleaning job are all writes to this
+        same datapoint, and a guessed frame has already started an unwanted job
+        once. The only frames this integration may ever write are the ones the
+        vendor app itself sends from a *named read-only getter*, transcribed
+        byte-for-byte out of its bundle -- that is `transport.GETTER_FRAMES` and
+        nothing else. The membership assertion below is not defensive
+        programming, it is the invariant: it exists so that no future edit can
+        route a different value through this loop.
+
+        Nothing is parsed here. The robot answers a getter asynchronously on the
+        push channel, so the replies come back through the normal listener path
+        and land in `self.robot_info` via `_ingest`, whenever they arrive.
+        """
+        if self.spec.dp_transportation is None or self.robot_info is None:
+            return
+
+        dp = self.spec.dp_transportation
+        # Snapshotted before the loop so the check below is a real membership
+        # test against the vendor allow-list rather than a self-reference, and
+        # so a mutation of GETTER_FRAMES mid-sweep cannot widen it.
+        allowed = frozenset(GETTER_FRAMES.values())
+        async with self._robot_info_lock:
+            for index, (name, frame) in enumerate(list(GETTER_FRAMES.items())):
+                # The whole safety rule, in one line. Immediately before the
+                # write, with nothing between it and `async_set_dp`.
+                if frame not in allowed:  # pragma: no cover - the invariant
+                    raise ValueError(
+                        f"refusing to write DP {dp}: {name!r} is not a vendor "
+                        "read-only getter frame"
+                    )
+                if index:
+                    # Sequential, with a gap: the replies are separate pushes and
+                    # a burst of writes gets them coalesced or dropped.
+                    await asyncio.sleep(GETTER_GAP_SECONDS)
+                try:
+                    # `_async_command` rather than `async_set_dp`: the write's
+                    # own reply is already ingested on the I/O thread, so the
+                    # extra `async_request_refresh()` would only add six
+                    # unnecessary status polls to a sweep that exists to be quiet.
+                    await self._async_command("set", dp, frame)
+                except Exception as err:  # noqa: BLE001 - one getter, not the sweep
+                    # A getter that fails costs one unread field. Never abort the
+                    # rest, and never raise: this runs unattended at startup.
+                    _LOGGER.debug(
+                        "bObsweep: getter %s failed on DP %s: %s", name, dp, err
+                    )
+
+    def room_names(self) -> dict[int, str]:
+        """Effective room-id -> name map: robot-derived, user overrides winning.
+
+        The base layer is whatever `RobotInfoTracker` could infer from
+        single-room schedule names -- the only route by which the robot reveals
+        a room name at all. The user's `bobsweep.set_room_name` overrides sit on
+        top, because a name someone typed is better evidence than a name guessed
+        from a schedule label.
+        """
+        names: dict[int, str] = {}
+        if self.robot_info is not None:
+            names.update(self.robot_info.room_names)
+        names.update(self.room_name_store.names)
+        return names
 
     async def _async_command(self, kind: str, *args: Any) -> Any:
         """Queue work for the I/O thread and await its result."""

@@ -114,16 +114,10 @@ SENSOR_DESCRIPTIONS: tuple[BobsweepSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # --- family-specific extras ---------------------------------------------
-    # Random only (DP 20). Exposed read-only here; it is written through the
-    # generic `bobsweep.set_dp` service rather than a new select platform.
-    BobsweepSensorEntityDescription(
-        key="water_control",
-        translation_key="water_control",
-        name="Water control",
-        dp_attr="dp_water_control",
-        icon="mdi:water",
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
+    # NB: water control (DP 20) used to be a read-only sensor here. It is now a
+    # writable `select` on both families that have it, so a duplicate read-only
+    # copy would only be a second name for the same value.
+    #
     # Random only (DP 103): the combined dustbin / water-tank attachment status
     # that replaces SLAM's separate mop (118) and vacuum (119) DPs.
     BobsweepSensorEntityDescription(
@@ -371,9 +365,32 @@ class BobsweepSelectedRoomsSensor(CoordinatorEntity[BobsweepCoordinator], Sensor
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """The selection, its decoded layout, and the raw payload."""
+        """The selection, its decoded layout, the raw payload, and room names."""
         tracker = getattr(self.coordinator, "room_selection", None)
-        return {} if tracker is None else tracker.as_attributes()
+        if tracker is None:
+            return {}
+        attrs = tracker.as_attributes()
+        # Names for the ids, where any are known. The robot never answers "what
+        # is room 3 called" directly; the map is assembled from single-room
+        # schedule names plus anything named by hand. See coordinator.room_names.
+        names = self._room_names()
+        attrs["room_names"] = names
+        if tracker.room_ids:
+            attrs["selected_room_names"] = [
+                names.get(room_id, f"Room {room_id}") for room_id in tracker.room_ids
+            ]
+        return attrs
+
+    def _room_names(self) -> dict[int, str]:
+        """Effective id -> name map, tolerating a coordinator without one."""
+        getter = getattr(self.coordinator, "room_names", None)
+        if not callable(getter):
+            return {}
+        try:
+            return dict(getter())
+        except Exception:  # noqa: BLE001 - an attribute must never raise
+            _LOGGER.debug("bObsweep: room_names() failed", exc_info=True)
+            return {}
 
 
 class BobsweepPathTrailSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
@@ -489,6 +506,136 @@ class BobsweepCurrentRoomSensor(CoordinatorEntity[BobsweepCoordinator], SensorEn
         return self.coordinator.rooms.attributes()
 
 
+class BobsweepRobotInfoSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
+    """Base for the sensors fed by the robot's read-only DP 105 getters.
+
+    These are not datapoints and they are not polled. The coordinator asks the
+    robot once at startup (and on `bobsweep.refresh_robot_info`) using the exact
+    frames the vendor app sends from its own named getters; the replies arrive
+    asynchronously and `RobotInfoTracker` keeps the decoded result. So every one
+    of these reads `unknown` until a reply has landed, which is a real state --
+    the robot may simply not have answered.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: BobsweepCoordinator, key: str, name: str, icon: str) -> None:
+        """Wire up one robot-info sensor."""
+        super().__init__(coordinator)
+        self.entity_description = SensorEntityDescription(
+            key=key,
+            translation_key=key,
+            name=name,
+            icon=icon,
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+        self._attr_unique_id = f"{coordinator.device_id}_{key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def _info(self) -> Any:
+        """The tracker, or None on a coordinator that predates it."""
+        return getattr(self.coordinator, "robot_info", None)
+
+
+class BobsweepSavedMapsSensor(BobsweepRobotInfoSensor):
+    """How many floor maps the robot has saved, with their ids and names.
+
+    The names are the only free text this robot hands over locally, and they are
+    the user's own from the app ("first floor v5"). Multi-map units keep several;
+    a single-map unit reports one.
+    """
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the saved-maps sensor."""
+        super().__init__(coordinator, "saved_maps", "Saved maps", "mdi:map-outline")
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> int | None:
+        """How many saved maps the robot reported, or None if it has not."""
+        info = self._info
+        if info is None or info.saved_maps is None:
+            return None
+        return len(info.saved_maps)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The maps as `{map_id, name}` entries."""
+        info = self._info
+        if info is None or info.saved_maps is None:
+            return {}
+        return {"maps": [saved_map.as_dict() for saved_map in info.saved_maps]}
+
+
+class BobsweepSchedulesSensor(BobsweepRobotInfoSensor):
+    """The robot's stored cleaning schedules, and the room names inside them.
+
+    Worth more than it looks. Each entry carries the room ids it targets *and*
+    the name the user gave it, so a single-room schedule is the robot telling
+    you what that room is called -- the only local source of room names there
+    is. `coordinator.room_names()` derives that map; the `room_names` attribute
+    here shows the result.
+
+    The state counts the schedules the robot holds, enabled or not; `enabled` on
+    each entry says which are live.
+    """
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the schedules sensor."""
+        super().__init__(coordinator, "schedules", "Schedules", "mdi:calendar-clock")
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> int | None:
+        """How many schedules the robot reported, or None if it has not."""
+        info = self._info
+        if info is None or info.schedules is None:
+            return None
+        return len(info.schedules)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The schedule list plus the room names derived from it."""
+        info = self._info
+        if info is None or info.schedules is None:
+            return {}
+        attrs: dict[str, Any] = {
+            "schedules": [entry.as_dict() for entry in info.schedules],
+            "enabled_count": sum(1 for entry in info.schedules if entry.enabled),
+        }
+        getter = getattr(self.coordinator, "room_names", None)
+        if callable(getter):
+            try:
+                attrs["room_names"] = dict(getter())
+            except Exception:  # noqa: BLE001 - an attribute must never raise
+                _LOGGER.debug("bObsweep: room_names() failed", exc_info=True)
+        return attrs
+
+
+class BobsweepMopClothSensor(BobsweepRobotInfoSensor):
+    """How dirty the robot reckons its mop cloth is, as a percentage."""
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the mop-cloth sensor."""
+        super().__init__(
+            coordinator, "mop_cloth_dirt", "Mop cloth dirt", "mdi:water-percent"
+        )
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> int | None:
+        """The dirt percentage, or None if the robot has not reported one."""
+        info = self._info
+        return None if info is None else info.mop_cloth_percent
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: BobsweepConfigEntry,
@@ -556,6 +703,23 @@ async def async_setup_entry(
         _LOGGER.debug(
             "Skipping bObsweep path-trail sensor: family %s has no path "
             "datapoint or no trail tracker",
+            spec.key,
+        )
+
+    # The robot-info sensors ride on the same transportation datapoint and the
+    # coordinator's tracker. They are created before any reply has arrived --
+    # the getters go out ~10 s after setup -- so they start out unknown by
+    # design rather than being withheld until the robot answers.
+    if spec.dp_transportation is not None and (
+        getattr(coordinator, "robot_info", None) is not None
+    ):
+        entities.append(BobsweepSavedMapsSensor(coordinator))
+        entities.append(BobsweepSchedulesSensor(coordinator))
+        entities.append(BobsweepMopClothSensor(coordinator))
+    else:
+        _LOGGER.debug(
+            "Skipping bObsweep robot-info sensors: family %s has no "
+            "transportation datapoint or no robot-info tracker",
             spec.key,
         )
 
