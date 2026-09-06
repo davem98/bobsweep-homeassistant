@@ -65,6 +65,30 @@ SERVICE_SET_MODE = "set_mode"
 SERVICE_EMPTY_DUSTBIN = "empty_dustbin"
 SERVICE_SET_DP = "set_dp"
 
+
+def coerce_dp_value(value: Any) -> Any:
+    """Turn a service-call value into the type the datapoint expects.
+
+    Tuya datapoints are typed on the wire: a bool DP given the *string* "True"
+    is silently ignored by the robot. The previous schema (`vol.Any(cv.string,
+    ...)`) stringified every value first, which is how `set_dp 102 true` came
+    to do nothing. Keep native bools and ints; map the textual forms a YAML or
+    UI call produces onto them; leave everything else a string.
+    """
+    if isinstance(value, bool) or (isinstance(value, int) and not isinstance(value, bool)):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+    text = str(value).strip()
+    lowered = text.lower()
+    if lowered in ("true", "on", "yes"):
+        return True
+    if lowered in ("false", "off", "no"):
+        return False
+    if lowered.lstrip("-").isdigit():
+        return int(lowered)
+    return text
+
 # Entity services are registered once per platform, so the `set_mode` schema has
 # to accept any family's work-mode vocabulary. The entity then rejects a value
 # its own family doesn't define — that check is the family-specific one.
@@ -223,10 +247,13 @@ class BobsweepVacuum(CoordinatorEntity[BobsweepCoordinator], StateVacuumEntity):
     async def async_pause(self) -> None:
         """Pause the current job.
 
-        No family has a dedicated pause DP — the app pauses by clearing
-        COMMAND_ENABLE. This may need field-tuning against real hardware; some
-        firmwares expect a work-mode write instead.
+        SLAM has a dedicated pause datapoint (COMMAND_PAUSE, the app's
+        `pauseRobot()`); families without one fall back to clearing
+        COMMAND_ENABLE, which ends the run rather than suspending it.
         """
+        if self._spec.dp_pause is not None:
+            await self.coordinator.async_set_dp(self._spec.dp_pause, True)
+            return
         if self._spec.dp_power is None:
             raise ServiceValidationError(
                 f"The {self._spec.key} bObsweep family has no enable datapoint to pause with"
@@ -234,19 +261,38 @@ class BobsweepVacuum(CoordinatorEntity[BobsweepCoordinator], StateVacuumEntity):
         await self.coordinator.async_set_dp(self._spec.dp_power, False)
 
     async def async_stop(self, **kwargs: Any) -> None:
-        """Stop the vacuum (end the cleaning run)."""
-        # Vision and Random have an explicit standby work mode; SLAM does not,
-        # so for SLAM clearing the enable switch is what stops the run and lets
-        # it fall back to idle/standby.
+        """Stop the vacuum (end the cleaning run, or cancel a return to dock).
+
+        Mirrors the app's `sendStop()`: while the robot is returning to the
+        dock the stop is START_STOP_DOCKING=false; while it is cleaning the
+        stop is ENABLE=false. Vision and Random instead have an explicit
+        standby work mode.
+        """
         if self._spec.mode_stop is not None:
             await self.coordinator.async_set_dp(
                 self._spec.dp_mode, self._mode_value(self._spec.mode_stop)
             )
             return
+        if (
+            self._spec.dp_docking is not None
+            and self._dp(self._spec.dp_status) in self._spec.status_returning
+        ):
+            await self.coordinator.async_set_dp(self._spec.dp_docking, False)
+            return
         await self.coordinator.async_set_dp(self._spec.dp_power, False)
 
     async def async_return_to_base(self, **kwargs: Any) -> None:
-        """Send the vacuum back to its dock."""
+        """Send the vacuum back to its dock.
+
+        On SLAM this is START_STOP_DOCKING=true, exactly what the app's
+        `startDocking()` writes; it works mid-clean. Writing the `chargego`
+        work mode alone does not redirect a running job (verified on hardware
+        2026-09-05: the robot kept cleaning), so that is only the fallback for
+        families without the docking datapoint.
+        """
+        if self._spec.dp_docking is not None:
+            await self.coordinator.async_set_dp(self._spec.dp_docking, True)
+            return
         await self.coordinator.async_set_dp(
             self._spec.dp_mode, self._mode_value(self._spec.mode_charge)
         )
@@ -437,7 +483,7 @@ async def async_setup_entry(
         SERVICE_SET_DP,
         {
             vol.Required("dp"): cv.string,
-            vol.Required("value"): vol.Any(cv.string, vol.Coerce(int), cv.boolean),
+            vol.Required("value"): coerce_dp_value,
         },
         "async_set_dp_service",
     )

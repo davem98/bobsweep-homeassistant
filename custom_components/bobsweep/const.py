@@ -201,6 +201,14 @@ class FamilySpec:
     dustbin_watertank: Mapping[str, str] | None = None
     mode_spot: str | None = None    # what `vacuum.clean_spot` writes
     mode_stop: str | None = None    # explicit standby mode, if the family has one
+    # Dedicated command DPs (SLAM only), verbatim from the vendor app's own
+    # command functions: `startDocking()` writes COMMAND_START_STOP_DOCKING=true
+    # (false cancels a return), `pauseRobot()` writes COMMAND_PAUSE, and
+    # `sendStop()` clears COMMAND_ENABLE while cleaning or clears
+    # START_STOP_DOCKING while returning. Writing the work mode alone does NOT
+    # redirect a running job (verified on hardware 2026-09-05).
+    dp_docking: str | None = None   # COMMAND_START_STOP_DOCKING
+    dp_pause: str | None = None     # COMMAND_PAUSE
     status_paused: frozenset[str] = field(default_factory=frozenset)
     status_error: frozenset[str] = field(default_factory=frozenset)
 
@@ -538,13 +546,19 @@ SLAM = FamilySpec(
         }
     ),
     status_returning=frozenset({"goto_charge", "redock", "goto_charge_maint"}),
+    # Only charge states prove the robot is on the dock. `standby` and `sleep`
+    # are where it lands after a stop or a failed return anywhere on the floor
+    # (observed repeatedly in the validation unit's status history); a real
+    # docking always ends in `charging`.
     status_docked=frozenset(
         {
-            "charging", "charge_done", "standby", "sleep",
+            "charging", "charge_done",
             "charging_and_mop_dry", "charge_done_and_mop_dry",
         }
     ),
     status_paused=frozenset({"paused"}),
+    dp_docking="102",
+    dp_pause="101",
     # everything else (dustbin_emptying, mop_wash, relocalizing, ...) -> idle
 )
 

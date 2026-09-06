@@ -183,10 +183,18 @@ The zone services all depend on the robot reporting a position, which today
 means having the vendor app's map screen open while you capture — see
 [Room awareness](#room-awareness).
 
-Note on `async_pause`/`async_stop`: SLAM-family robots have no dedicated pause
-datapoint; both are currently implemented as toggling the enable switch off.
-This works but may need field-tuning against your specific firmware — reports
-welcome.
+Note on the standard commands: on the SLAM family they mirror what the vendor
+app sends. Return-to-base writes the dedicated docking datapoint (DP 102),
+which works mid-clean — writing the `chargego` work mode alone does not
+redirect a running job. Stop clears the enable switch while cleaning and
+cancels the docking datapoint while returning. Pause writes the dedicated
+pause datapoint (DP 101), transcribed from the app but not yet exercised on
+hardware — reports welcome. Vision and Random use their explicit standby work
+mode and have no separate pause.
+
+The raw `bobsweep.set_dp` service keeps value types: `true`/`false` become
+booleans and digit strings become integers, because the robot silently ignores
+a boolean datapoint written as the string `"True"`.
 
 ## Installation
 
