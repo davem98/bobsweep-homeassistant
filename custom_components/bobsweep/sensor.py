@@ -315,6 +315,117 @@ class BobsweepObstaclesSensor(CoordinatorEntity[BobsweepCoordinator], SensorEnti
         return tracker.as_attributes()
 
 
+class BobsweepSelectedRoomsSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
+    """Which rooms the last room-targeted clean was told to do (DP 105, 0x22).
+
+    Not a raw datapoint, and not pollable. `eCleanSelectRoomsToApp` is the
+    robot's **ack** of an `eCleanSelectRooms` command from the app; it is not
+    part of the `eAll` report set, so the only way to know a room selection is
+    to be listening when it goes past and then remember it.
+    `RoomSelectionTracker` (owned by the coordinator) does the remembering.
+
+    Three states, all meaningfully different:
+
+    * ``"1,3"`` -- a comma-joined list of the selected room ids;
+    * ``"none"`` -- the robot acked a selection with no rooms in it;
+    * ``None`` / unknown -- no ack has been seen this session, or the one that
+      was seen had a payload layout this integration could not read. The
+      ``layout`` and ``raw`` attributes tell those two apart.
+
+    The ids are the robot's own room numbers from its map partition, not the
+    zone names taught through this integration; the two are separate concepts
+    and nothing here tries to reconcile them.
+
+    SLAM only -- the other two families have no transportation datapoint.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the selected-rooms sensor."""
+        super().__init__(coordinator)
+        self.entity_description = SensorEntityDescription(
+            key="selected_rooms",
+            translation_key="selected_rooms",
+            name="Selected rooms",
+            icon="mdi:floor-plan",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+        self._attr_unique_id = f"{coordinator.device_id}_selected_rooms"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        """The selected room ids, `none`, or None when nothing is known."""
+        tracker = getattr(self.coordinator, "room_selection", None)
+        if tracker is None or tracker.room_ids is None:
+            return None
+        if not tracker.room_ids:
+            return "none"
+        return ",".join(str(room_id) for room_id in tracker.room_ids)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The selection, its decoded layout, and the raw payload."""
+        tracker = getattr(self.coordinator, "room_selection", None)
+        return {} if tracker is None else tracker.as_attributes()
+
+
+class BobsweepPathTrailSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
+    """How many points the robot's current path trail contains (DP 104).
+
+    The state is the **robot's own** `count` for the current path, not how many
+    points this integration happens to hold. Those differ, legitimately and
+    often: the trail is received passively -- the robot emits new points while a
+    map session is running and we never ask for any -- so a session that starts
+    listening mid-job sees only the batches that were still on the wire.
+    `points_held` on the attributes is our number; the state is the robot's.
+
+    `None` (unknown) until a `cmd:102` batch has been decoded. The count resets
+    when the `pathid` changes, which is once per job.
+
+    SLAM only -- the other two families have no path datapoint.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the path-trail sensor."""
+        super().__init__(coordinator)
+        self.entity_description = SensorEntityDescription(
+            key="path_trail",
+            translation_key="path_trail",
+            name="Path trail",
+            icon="mdi:map-marker-path",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            state_class=SensorStateClass.MEASUREMENT,
+        )
+        self._attr_unique_id = f"{coordinator.device_id}_path_trail"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def native_value(self) -> int | None:
+        """The robot's point count for the current path, or None if unknown."""
+        tracker = getattr(self.coordinator, "trail", None)
+        return None if tracker is None else tracker.count
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Path id, how much of the trail we hold, and decode diagnostics."""
+        tracker = getattr(self.coordinator, "trail", None)
+        return {} if tracker is None else tracker.as_attributes()
+
+
 class BobsweepCurrentRoomSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
     """Which taught zone the robot is currently in.
 
@@ -421,6 +532,30 @@ async def async_setup_entry(
         _LOGGER.debug(
             "Skipping bObsweep obstacle sensor: family %s has no transportation "
             "datapoint",
+            spec.key,
+        )
+
+    # Room selections ride on the same transportation datapoint, but the sensor
+    # also needs the coordinator to actually own a tracker: a coordinator from
+    # an older install would otherwise take the whole platform setup down.
+    if spec.dp_transportation is not None and (
+        getattr(coordinator, "room_selection", None) is not None
+    ):
+        entities.append(BobsweepSelectedRoomsSensor(coordinator))
+    else:
+        _LOGGER.debug(
+            "Skipping bObsweep selected-rooms sensor: family %s has no "
+            "transportation datapoint or no room-selection tracker",
+            spec.key,
+        )
+
+    # The path trail is DP 104, and likewise only if the tracker exists.
+    if spec.dp_path_data is not None and getattr(coordinator, "trail", None) is not None:
+        entities.append(BobsweepPathTrailSensor(coordinator))
+    else:
+        _LOGGER.debug(
+            "Skipping bObsweep path-trail sensor: family %s has no path "
+            "datapoint or no trail tracker",
             spec.key,
         )
 

@@ -191,11 +191,6 @@ def _vacuuming(spec: FamilySpec, data: dict[str, Any]) -> bool:
     return True
 
 
-def _muted(spec: FamilySpec, data: dict[str, Any]) -> bool:
-    # Vision's ROBOT_MUTE is a genuine bool ({ENABLE: true, DISABLE: false}).
-    return bool(data.get(spec.dp_mute))
-
-
 BINARY_SENSOR_DESCRIPTIONS: tuple[BobsweepBinarySensorEntityDescription, ...] = (
     BobsweepBinarySensorEntityDescription(
         key="self_emptying",
@@ -247,15 +242,9 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BobsweepBinarySensorEntityDescription, ...] = 
         is_on_fn=_vacuuming,
         required_dps=("dp_fan",),
     ),
-    # Vision only (DP 215).
-    BobsweepBinarySensorEntityDescription(
-        key="muted",
-        translation_key="muted",
-        name="Muted",
-        icon="mdi:volume-off",
-        is_on_fn=_muted,
-        required_dps=("dp_mute",),
-    ),
+    # The Vision-only "muted" binary sensor (DP 215) was removed 2026-09-05:
+    # the new `mute` switch in switch.py supersedes it with a settable control
+    # over the same datapoint rather than a read-only mirror of it.
 )
 
 

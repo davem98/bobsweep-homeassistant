@@ -126,11 +126,105 @@
           "wheel_right": "Right wheel",
           "wheel_sensor": "Wheel sensor"
         }
+      },
+      "path_trail": {
+        "name": "Path trail"
+      },
+      "selected_rooms": {
+        "name": "Selected rooms"
       }
     },
     "switch": {
       "camera_object_detection": {
         "name": "Camera obstacle detection"
+      },
+      "mute": {
+        "name": "Mute"
+      },
+      "cliff_sensor": {
+        "name": "Cliff sensor"
+      },
+      "auto_empty": {
+        "name": "Auto empty"
+      },
+      "quick_clean_use_global_vacuum": {
+        "name": "Quick clean uses global vacuum settings"
+      }
+    },
+    "select": {
+      "water_level": {
+        "name": "Water level",
+        "state": {
+          "closed": "Off",
+          "low": "Low",
+          "middle": "Medium",
+          "high": "High"
+        }
+      },
+      "floor_type_detection": {
+        "name": "Floor type detection",
+        "state": {
+          "on": "On",
+          "off": "Off",
+          "on_with_carpet_boost": "On, with carpet boost",
+          "on_avoid_nomop": "On, avoid no-mop zones"
+        }
+      },
+      "self_empty_power": {
+        "name": "Self-empty power",
+        "state": {
+          "strong": "Strong",
+          "normal": "Normal"
+        }
+      },
+      "mop_maintenance_strategy": {
+        "name": "Mop maintenance strategy",
+        "state": {
+          "heavy": "Heavy",
+          "medium": "Medium",
+          "light": "Light",
+          "manual": "Manual",
+          "max": "Max"
+        }
+      },
+      "extending_arms": {
+        "name": "Extending arms",
+        "state": {
+          "off": "Off",
+          "brush_side_and_mop": "Brush, side brush and mop",
+          "brush_side": "Brush and side brush",
+          "mop": "Mop"
+        }
+      },
+      "mop_dry_duration": {
+        "name": "Mop dry duration",
+        "state": {
+          "default": "Default",
+          "quiet": "Quiet",
+          "manual": "Manual"
+        }
+      },
+      "mop_wash_temperature": {
+        "name": "Mop wash temperature",
+        "state": {
+          "room": "Room temperature",
+          "heated_wash": "Heated wash",
+          "heated_mop": "Heated mop"
+        }
+      },
+      "dock_task_self_empty": {
+        "name": "Dock task on self-empty",
+        "state": {
+          "off": "Off",
+          "mop_wash": "Mop wash",
+          "mop_dry": "Mop dry",
+          "dustbin_empty": "Dustbin empty"
+        }
+      }
+    },
+    "number": {
+      "volume": {
+        "name": "Volume"
       }
     }
   },

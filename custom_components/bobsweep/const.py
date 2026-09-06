@@ -137,11 +137,48 @@ class FamilySpec:
     dp_language: str | None = None               # Vision only (DP 217)
     dp_cliff_sensor: str | None = None           # DP 218 Vision (SLAM: 111, unmodelled)
 
+    # --- settings DPs, added 2026-09-05 (live raw-status read, SLAM unit) ------
+    # Same absence rule as everything else here: `None` means the *family* has
+    # no such datapoint per the vendor tables. A family having the DP does not
+    # mean a given unit emits it -- see the platform-level gating in select.py.
+    dp_water_level: str | None = None            # COMMAND_WATER_CONTROL (DP 20)
+    dp_floor_type_detection: str | None = None   # COMMAND_FLOOR_TYPE_DETECTION (112)
+    dp_self_empty_power: str | None = None       # COMMAND_SELF_EMPTY_POWER (124)
+    dp_mop_maintenance_strategy: str | None = None  # COMMAND_MOP_MAINTAINENCE_STRATEGY (134)
+    dp_extending_arms: str | None = None         # COMMAND_EXTENDING_ARMS (130)
+    dp_mop_dry_duration: str | None = None       # COMMAND_MOP_DRY_DURATION (132)
+    dp_mop_wash_temperature: str | None = None   # COMMAND_MOP_WASH_TEMPERATURE (133)
+    dp_dock_task_self_empty: str | None = None   # COMMAND_DOCK_TASK_SELF_EMPTY (135)
+    dp_mute_switch: str | None = None            # COMMAND_MUTE as a plain bool switch
+                                                  # (SLAM: 107, Vision: 215). Distinct
+                                                  # from `dp_mute`/`_muted` above, which
+                                                  # is the existing Vision-only sensor
+                                                  # field and is left untouched.
+    dp_cliff_sensor_switch: str | None = None    # COMMAND_CLIFF_SENSOR as a switch
+                                                  # (SLAM only, DP 111, string 'on'/'off').
+                                                  # Distinct from `dp_cliff_sensor` above
+                                                  # (Vision's DP 218, unmodelled sensor).
+    # No new field for "auto empty": it is the existing `dp_dustbin_empty_switch`
+    # (SLAM DP 115) above, exposed as a switch. Reusing it rather than adding a
+    # duplicate field.
+    dp_quick_clean_use_global_vacuum: str | None = None  # DP 122
+    dp_volume: str | None = None                 # COMMAND_VOLUME (DP 108, int 0-100)
+
     # --- enum vocabularies (NAME -> Tuya enum payload) -----------------------
     work_mode: Mapping[str, str]
     clean_direction: Mapping[str, str]
     status: Mapping[str, str]
     fan_speed: Mapping[str, str]
+
+    # --- settings enum vocabularies (added 2026-09-05) -----------------------
+    water_level: Mapping[str, str] | None = None
+    floor_type_detection: Mapping[str, str] | None = None
+    self_empty_power: Mapping[str, str] | None = None
+    mop_maintenance_strategy: Mapping[str, str] | None = None
+    extending_arms: Mapping[str, str] | None = None
+    mop_dry_duration: Mapping[str, str] | None = None
+    mop_wash_temperature: Mapping[str, str] | None = None
+    dock_task_self_empty: Mapping[str, str] | None = None
 
     # --- HA-facing derivations ----------------------------------------------
     # HA `fan_speed_list`: the fan enum values a user may pick, excluding any
@@ -366,6 +403,65 @@ SLAM = FamilySpec(
     dp_path_data="104",
     dp_transportation="105",
     dp_camera="128",
+    # Settings DPs, added 2026-09-05. See the DP-MAPS-EXTRACTED.md TUYA_SLAM
+    # section: 130/132/133/135 are tabled by the vendor for this family but
+    # were absent from a live raw-status read of the reference unit -- see the
+    # presence-gating rule in select.py for why that is not a contradiction.
+    dp_water_level="20",
+    dp_floor_type_detection="112",
+    dp_self_empty_power="124",
+    dp_extending_arms="130",
+    dp_mop_dry_duration="132",
+    dp_mop_wash_temperature="133",
+    dp_mop_maintenance_strategy="134",
+    dp_dock_task_self_empty="135",
+    dp_mute_switch="107",
+    dp_cliff_sensor_switch="111",
+    dp_quick_clean_use_global_vacuum="122",
+    dp_volume="108",
+    water_level=_frozen(
+        {"CLOSED": "closed", "LOW": "low", "MIDDLE": "middle", "HIGH": "high"}
+    ),
+    floor_type_detection=_frozen(
+        {
+            "ON": "on",
+            "OFF": "off",
+            "ON_WITH_CARPET_BOOST": "on_with_carpet_boost",
+            "ON_AVOID_NOMOP": "on_avoid_nomop",
+        }
+    ),
+    self_empty_power=_frozen({"STRONG": "strong", "NORMAL": "normal"}),
+    mop_maintenance_strategy=_frozen(
+        {
+            "HEAVY": "heavy",
+            "MEDIUM": "medium",
+            "LIGHT": "light",
+            "MANUAL": "manual",
+            "MAX": "max",
+        }
+    ),
+    extending_arms=_frozen(
+        {
+            "OFF": "off",
+            "BRUSH_SIDE_AND_MOP": "brush_side_and_mop",
+            "BRUSH_SIDE": "brush_side",
+            "MOP": "mop",
+        }
+    ),
+    mop_dry_duration=_frozen(
+        {"DEFAULT": "default", "QUIET": "quiet", "MANUAL": "manual"}
+    ),
+    mop_wash_temperature=_frozen(
+        {"ROOM": "room", "HEATED_WASH": "heated_wash", "HEATED_MOP": "heated_mop"}
+    ),
+    dock_task_self_empty=_frozen(
+        {
+            "OFF": "off",
+            "MOP_WASH": "mop_wash",
+            "MOP_DRY": "mop_dry",
+            "DUSTBIN_EMPTY": "dustbin_empty",
+        }
+    ),
     work_mode=_frozen(
         {
             "AUTO_CLEANING": "smart",
@@ -484,6 +580,9 @@ VISION = FamilySpec(
     dp_position="216",
     dp_language="217",
     dp_cliff_sensor="218",
+    # Settings DPs, added 2026-09-05. Vision has only the mute switch among
+    # this batch; every other settings DP above is None for this family.
+    dp_mute_switch="215",
     work_mode=_frozen(
         {
             "AUTO_CLEANING": "smart",
@@ -581,6 +680,11 @@ RANDOM = FamilySpec(
     dp_water_control="20",
     # One combined attachment DP replaces SLAM's separate mop (118)/vacuum (119).
     dp_status_dustbin_watertank="103",
+    # Settings DPs, added 2026-09-05. Random shares DP 20 with SLAM but only
+    # a three-value enum (no MIDDLE) -- see DP-MAPS-EXTRACTED.md TUYA_RANDOM.
+    # Every other settings DP above is None for this family.
+    dp_water_level="20",
+    water_level=_frozen({"CLOSED": "closed", "LOW": "low", "HIGH": "high"}),
     work_mode=_frozen(
         {
             "CHARGE": "chargego",

@@ -17,12 +17,22 @@ have the switch.
 SLAM only. Vision and Random have no DP 128 (`dp_camera` is `None` for them), so
 the platform creates nothing rather than publishing a switch that writes into a
 datapoint the robot does not implement.
+
+**Settings switches, added 2026-09-05.** `mute`, `cliff_sensor`,
+`auto_empty` and `quick_clean_use_global_vacuum` follow the same
+presence-gating rule as `select.py` (read that module's docstring for the
+rationale): an entity is created only when the family declares the datapoint
+AND the datapoint is actually present in `coordinator.data` at platform setup.
+`cliff_sensor` is the one oddity -- DP 111 (`COMMAND_CLIFF_SENSOR`) is a
+*string* `'on'`/`'off'` on the wire, not a Tuya bool, so it gets its own
+read/write conversion rather than the plain-bool one the others share.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.const import EntityCategory
@@ -32,7 +42,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import BobsweepConfigEntry
-from .const import DEFAULT_NAME, DOMAIN
+from .const import DEFAULT_NAME, DOMAIN, FamilySpec
 from .coordinator import BobsweepCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -106,6 +116,153 @@ class BobsweepCameraSwitch(CoordinatorEntity[BobsweepCoordinator], SwitchEntity)
         await self.coordinator.async_set_dp(self._dp, False)
 
 
+@dataclass(frozen=True, kw_only=True)
+class BobsweepDpSwitchEntityDescription(SwitchEntityDescription):
+    """Describes a plain settings switch bound to one FamilySpec DP attribute."""
+
+    dp_attr: str
+    # Converts the raw coordinator value to True/False/None (unknown).
+    decode: Callable[[Any], bool | None]
+    # Converts True/False to the exact wire value `async_set_dp` should send.
+    encode: Callable[[bool], Any]
+
+
+def _decode_bool(value: Any) -> bool | None:
+    """Same tolerant bool decode as the camera switch's `is_on`."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "on", "1"):
+            return True
+        if lowered in ("false", "off", "0"):
+            return False
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
+
+
+def _encode_bool(value: bool) -> bool:
+    return value
+
+
+def _decode_onoff_string(value: Any) -> bool | None:
+    """DP 111 (COMMAND_CLIFF_SENSOR) is the *string* 'on'/'off', not a bool."""
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "on":
+            return True
+        if lowered == "off":
+            return False
+    return None
+
+
+def _encode_onoff_string(value: bool) -> str:
+    return "on" if value else "off"
+
+
+SETTINGS_SWITCH_DESCRIPTIONS: tuple[BobsweepDpSwitchEntityDescription, ...] = (
+    BobsweepDpSwitchEntityDescription(
+        key="mute",
+        translation_key="mute",
+        name="Mute",
+        icon="mdi:volume-off",
+        entity_category=EntityCategory.CONFIG,
+        dp_attr="dp_mute_switch",
+        decode=_decode_bool,
+        encode=_encode_bool,
+    ),
+    # SLAM only: Vision's cliff sensor (DP 218) stays the existing raw
+    # `dp_cliff_sensor` sensor field, untouched by this addition.
+    BobsweepDpSwitchEntityDescription(
+        key="cliff_sensor",
+        translation_key="cliff_sensor",
+        name="Cliff sensor",
+        icon="mdi:signal-distance-variant",
+        entity_category=EntityCategory.CONFIG,
+        dp_attr="dp_cliff_sensor_switch",
+        decode=_decode_onoff_string,
+        encode=_encode_onoff_string,
+    ),
+    BobsweepDpSwitchEntityDescription(
+        key="auto_empty",
+        translation_key="auto_empty",
+        name="Auto empty",
+        icon="mdi:delete-empty",
+        entity_category=EntityCategory.CONFIG,
+        dp_attr="dp_dustbin_empty_switch",
+        decode=_decode_bool,
+        encode=_encode_bool,
+    ),
+    BobsweepDpSwitchEntityDescription(
+        key="quick_clean_use_global_vacuum",
+        translation_key="quick_clean_use_global_vacuum",
+        name="Quick clean uses global vacuum settings",
+        icon="mdi:vacuum-cleaner",
+        entity_category=EntityCategory.CONFIG,
+        dp_attr="dp_quick_clean_use_global_vacuum",
+        decode=_decode_bool,
+        encode=_encode_bool,
+    ),
+)
+
+
+class BobsweepDpSwitch(CoordinatorEntity[BobsweepCoordinator], SwitchEntity):
+    """A plain settings switch bound to one datapoint via its description's
+    decode/encode pair (see `BobsweepDpSwitchEntityDescription`)."""
+
+    _attr_has_entity_name = True
+
+    entity_description: BobsweepDpSwitchEntityDescription
+
+    def __init__(
+        self,
+        coordinator: BobsweepCoordinator,
+        description: BobsweepDpSwitchEntityDescription,
+        dp: str,
+    ) -> None:
+        """Bind the switch to its resolved datapoint."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._dp = dp
+        self._attr_unique_id = f"{coordinator.device_id}_{description.key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Decoded state from the bound datapoint, or None before it arrives."""
+        data = self.coordinator.data
+        if not data or self._dp not in data:
+            return None
+        return self.entity_description.decode(data[self._dp])
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the setting on."""
+        await self.coordinator.async_set_dp(self._dp, self.entity_description.encode(True))
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the setting off."""
+        await self.coordinator.async_set_dp(self._dp, self.entity_description.encode(False))
+
+
+def _settings_switch_dp(
+    spec: FamilySpec, data: dict[str, Any] | None, description: BobsweepDpSwitchEntityDescription
+) -> str | None:
+    """Presence-gated DP lookup: see the module docstring's gating rule."""
+    dp = getattr(spec, description.dp_attr)
+    if dp is None:
+        return None
+    if not data or dp not in data:
+        return None
+    return dp
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: BobsweepConfigEntry,
@@ -113,11 +270,29 @@ async def async_setup_entry(
 ) -> None:
     """Set up the bObsweep switches for a config entry."""
     coordinator = entry.runtime_data
-    dp = coordinator.spec.dp_camera
+    spec = coordinator.spec
+    data = coordinator.data
+
+    entities: list[SwitchEntity] = []
+
+    dp = spec.dp_camera
     if dp is None:
         _LOGGER.debug(
             "Skipping bObsweep camera switch: family %s has no camera datapoint",
-            coordinator.spec.key,
+            spec.key,
         )
-        return
-    async_add_entities([BobsweepCameraSwitch(coordinator, dp)])
+    else:
+        entities.append(BobsweepCameraSwitch(coordinator, dp))
+
+    for description in SETTINGS_SWITCH_DESCRIPTIONS:
+        dp = _settings_switch_dp(spec, data, description)
+        if dp is None:
+            _LOGGER.debug(
+                "Skipping bObsweep switch %s: unsupported by family %s or absent from data",
+                description.key,
+                spec.key,
+            )
+            continue
+        entities.append(BobsweepDpSwitch(coordinator, description, dp))
+
+    async_add_entities(entities)

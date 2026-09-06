@@ -61,9 +61,11 @@ and what didn't — that's how those families get promoted to validated.
 
 ## Entities
 
-One vacuum entity plus a set of diagnostic sensors, all backed by the same
-coordinator (polls the device every 15 seconds over a persistent local
-socket). Every entity is resolved against the datapoint table for your
+One vacuum entity plus sensors, switches and settings, all backed by one
+coordinator. The coordinator keeps a persistent local socket open and
+**listens** on it: the robot pushes most of its state unprompted (battery,
+status, command-channel frames several times a second during a job), and a
+full status poll every 30 seconds backs that up. Every entity is resolved against the datapoint table for your
 configured `model_family` — if a family has no datapoint for a given reading
 (e.g. Vision has no brush/filter-life DPs), that entity is simply not created
 rather than showing up permanently unknown.
@@ -95,14 +97,30 @@ rather than showing up permanently unknown.
   reads *unknown* until the robot sends its first report; `0` is a real value
   meaning "nothing found yet".
 
-  Note: the SLAM family also has water-control (DP 20, with a fourth `middle`
-  level) and mute/volume/cliff-sensor datapoints that this integration does not
-  yet model. (The full per-family datapoint tables are not published in this
-  repo.)
+  **Path trail** (SLAM only, diagnostic) is the robot's own point count for the
+  current cleaning path, with the last known point and the path id as
+  attributes. It fills in only while something is driving the robot's map
+  session — today that means the vendor app's map screen being open (see
+  [Room awareness](#room-awareness)).
+
+  **Selected rooms** (SLAM only, diagnostic) records the room ids the robot
+  acknowledged when a room-targeted clean was started from the app. The robot
+  emits this once per job and never reports it on a poll, which is why the
+  coordinator listens. The payload layout is not fully pinned down yet; the
+  raw bytes and the decoder's guess at the layout are on the attributes.
 - **Binary sensors**: self-emptying (SLAM only), charging, docked, problem
-  (with error attributes), mopping, vacuuming, muted (Vision only). Each is
-  only created when the configured family actually has the underlying
-  datapoint(s) or status value it depends on.
+  (with error attributes), mopping, vacuuming. Each is only created when the
+  configured family actually has the underlying datapoint(s) or status value
+  it depends on.
+- **Settings** (configuration category; each created only when the family has
+  the datapoint *and* your unit actually reports it, because the vendor's
+  tables describe the product line, not every firmware): selects for **water
+  level** (SLAM and Random, with the family's own option list), **floor type
+  detection**, **self-empty power**, **mop maintenance strategy**, and, on
+  units that report them, **extending arms**, **mop dry duration**, **mop wash
+  temperature** and **dock task self-empty**; switches for **mute** (SLAM and
+  Vision), **cliff sensor**, **auto-empty** and **quick clean uses global
+  vacuum settings**; and a **volume** slider.
 - **Switch**: **Camera obstacle detection** (SLAM only) — turns the robot's
   on-board object-detection camera on and off (DP 128). This is the only
   user-facing control over the camera on the device, and it works entirely
@@ -118,15 +136,20 @@ The integration can group the robot's position into rooms you teach it, and
 report the current one on `sensor.<name>_current_room`. The zone capture and
 management services are listed below.
 
-The honest caveat: **this robot does not reliably report where it is, yet.**
-The datapoint that looks like a position trail (DP 104) *does* carry one — the
-robot returns `{"cmd":102,...,"point":[[x,y],...]}` with real coordinates — but
-so far it only does so while the vendor app's map screen is open and driving
-the request loop. Requests issued by this integration go unanswered, so the
-trail cannot be relied on as a live position source. By default `current_room`
-therefore reads *unknown* — the truthful answer, and deliberately not the same
-state as `unmapped` (which means the position is known and is in no room you
-have taught).
+The honest caveat: **this robot only reports where it is while the vendor
+app's map screen is open.** The path-trail datapoint (DP 104) carries real
+coordinates — `{"cmd":102,...,"point":[[x,y],...]}` — and the integration
+harvests every point it sees and uses the newest one as the robot's position
+for up to 90 seconds. But the robot streams those points only while the app's
+map session is driving it; requests issued by this integration go unanswered
+(so far — see below). In practice that means:
+
+- **Teaching zones works.** Open the app's map screen, drive or send the robot
+  around a room, and run the capture services: positions flow.
+- **Unattended cleans have no position.** With the app closed, `current_room`
+  reads *unknown* — the truthful answer, and deliberately not the same state
+  as `unmapped` (which means the position is known and is in no room you have
+  taught). The `last_known_room` attribute keeps the last confident answer.
 
 There is one opt-in approximation, off by default, under the integration's
 **Configure** button:
@@ -156,8 +179,8 @@ Registered as entity services on the `vacuum` domain (`integration: bobsweep`):
 | `bobsweep.delete_zone` | Delete a stored zone by name. |
 | `bobsweep.export_zones` / `bobsweep.import_zones` | Back up or restore the whole zone document (returns/accepts service response data). |
 
-The zone services all depend on the robot being able to report a position, so
-they are only useful with the opt-in source above enabled — see
+The zone services all depend on the robot reporting a position, which today
+means having the vendor app's map screen open while you capture — see
 [Room awareness](#room-awareness).
 
 Note on `async_pause`/`async_stop`: SLAM-family robots have no dedicated pause

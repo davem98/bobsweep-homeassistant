@@ -575,3 +575,182 @@ class AiObjectTracker:
         self.echoes_ignored = 0
         self.last_sighting = None
         self._pending = None
+
+
+# --- eCleanSelectRooms / …ToApp (cmd 0x12 / 0x22) ----------------------------
+
+
+def decode_room_selection(data: bytes) -> tuple[str, list[int] | None, list[int] | None]:
+    """Decode a room-selection payload into `(layout, room_ids, passes)`.
+
+    **The layout is not pinned down.** The only real sample is `01 01 01` — one
+    room — and one byte of it is the count, which leaves the remaining two bytes
+    genuinely ambiguous. Two readings fit every frame seen so far:
+
+    * `[count, id, id, …]` — a plain list of room ids;
+    * `[count, (id, passes), …]` — each room with its pass count, which is what
+      the vendor app's room-clean UI collects.
+
+    So this measures the payload instead of assuming: `1 + count` bytes means
+    ids, `1 + 2*count` means id/pass pairs, and anything else is reported as
+    `"unknown"` with the raw bytes preserved rather than force-fitted. With
+    `count == 1` both formulas cannot both match — `1 + 1 = 2 != 3 = 1 + 2*1` —
+    and the real frame is three bytes, so `01 01 01` reads as one room with one
+    pass. That is a *decode*, not a confirmation; a two-room job will settle it
+    in one frame, which is why the layout is surfaced as an attribute.
+
+    Returns `("empty", [], [])` for a well-formed zero-room selection, which is
+    a different answer from "we could not read it".
+    """
+    if not data:
+        return ("unknown", None, None)
+    count = data[0]
+    body = data[1:]
+    if count == 0 and not body:
+        return ("empty", [], None)
+    if len(body) == count:
+        return ("ids", list(body), None)
+    if len(body) == 2 * count:
+        return ("id_passes", list(body[0::2]), list(body[1::2]))
+    return ("unknown", None, None)
+
+
+@dataclass(frozen=True)
+class RoomSelection:
+    """One observed room-selection frame."""
+
+    #: 0x22 for the robot's ack, 0x12 for the app's command.
+    cmd: int
+    layout: str
+    room_ids: list[int] | None
+    passes: list[int] | None
+    raw_hex: str
+    #: `time.monotonic()` when it was seen.
+    at: float
+
+    def as_dict(self) -> dict[str, Any]:
+        """Attribute-friendly form."""
+        return {
+            "cmd": f"0x{self.cmd:02X}",
+            "layout": self.layout,
+            "room_ids": self.room_ids,
+            "passes": self.passes,
+            "raw": self.raw_hex,
+        }
+
+
+class RoomSelectionTracker:
+    """Remembers which rooms were last selected for a room-targeted clean.
+
+    **Listening is the only way to know this.** `eCleanSelectRoomsToApp` (0x22)
+    is an *ack*: the robot emits it when the app commands a room clean
+    (`eCleanSelectRooms`, 0x12) and never otherwise — verified on hardware
+    2026-09-02, where two `eAll` dumps during a live room clean returned no 0x22
+    either time. Polling will never surface it, so this tracker exists to catch
+    the frame as it goes past and hold onto it.
+
+    The 0x12 command is recorded separately as `last_command`. It is the app
+    talking, not the robot answering, so it is evidence of intent rather than of
+    state; the two are kept apart on purpose, and only the ack updates the
+    selection this tracker reports.
+
+    Nothing here writes. See the module docstring on why a DP 105 write path is
+    a separate, deliberate decision.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing observed."""
+        #: The rooms in the last ack, or None if the layout could not be read.
+        self.room_ids: list[int] | None = None
+        #: Per-room pass counts, when the payload turned out to carry them.
+        self.passes: list[int] | None = None
+        #: The last ack's payload bytes, always kept even when undecodable.
+        self.raw_hex: str | None = None
+        #: "ids" | "id_passes" | "empty" | "unknown" — how the payload read.
+        self.layout: str = "unknown"
+        #: `time.monotonic()` of the last ack.
+        self.observed_at: float | None = None
+        #: The last 0x12 the app sent, for comparison against the ack.
+        self.last_command: RoomSelection | None = None
+        #: Acks seen / commands seen / values that were our own echoed writes.
+        self.acks_seen = 0
+        self.commands_seen = 0
+        self.echoes_ignored = 0
+
+    def ingest(self, value: Any, *, now: float | None = None) -> RoomSelection | None:
+        """Feed one raw DP 105 value in. Returns the ack it decoded, or None.
+
+        Safe to call with anything, including None and frames of other commands.
+        Only a base64-decoded, checksum-valid 0xAA frame with cmd 0x12 or 0x22
+        does anything, and only 0x22 updates the reported selection.
+        """
+        decoded = decode_wire_value(value)
+        if decoded is None:
+            return None
+        if not decoded.from_robot:
+            # A local hex-encoded write echoed back. Explicitly not data.
+            self.echoes_ignored += 1
+            return None
+        frame = decoded.frame
+        if frame.header != HEADER_AA:
+            return None
+        if frame.cmd not in (CMD_CLEAN_SELECT_ROOMS, CMD_CLEAN_SELECT_ROOMS_TO_APP):
+            return None
+
+        layout, room_ids, passes = decode_room_selection(frame.data)
+        observation = RoomSelection(
+            cmd=frame.cmd,
+            layout=layout,
+            room_ids=room_ids,
+            passes=passes,
+            raw_hex=frame.data.hex(),
+            at=time.monotonic() if now is None else now,
+        )
+
+        if frame.cmd == CMD_CLEAN_SELECT_ROOMS:
+            self.commands_seen += 1
+            self.last_command = observation
+            return None
+
+        self.acks_seen += 1
+        self.room_ids = room_ids
+        self.passes = passes
+        self.raw_hex = observation.raw_hex
+        self.layout = layout
+        self.observed_at = observation.at
+        return observation
+
+    @property
+    def age(self) -> float | None:
+        """Seconds since the last ack, or None if there has never been one."""
+        if self.observed_at is None:
+            return None
+        return max(0.0, time.monotonic() - self.observed_at)
+
+    def as_attributes(self) -> dict[str, Any]:
+        """Attribute payload for the selected-rooms sensor."""
+        age = self.age
+        return {
+            "room_ids": self.room_ids,
+            "passes": self.passes,
+            "layout": self.layout,
+            "raw": self.raw_hex,
+            "age": None if age is None else round(age, 1),
+            "acks_seen": self.acks_seen,
+            "commands_seen": self.commands_seen,
+            "last_command": (
+                self.last_command.as_dict() if self.last_command else None
+            ),
+        }
+
+    def reset(self) -> None:
+        """Forget everything — for a new job, or for tests."""
+        self.room_ids = None
+        self.passes = None
+        self.raw_hex = None
+        self.layout = "unknown"
+        self.observed_at = None
+        self.last_command = None
+        self.acks_seen = 0
+        self.commands_seen = 0
+        self.echoes_ignored = 0

@@ -569,6 +569,10 @@ class RoomTracker:
                 self.classifier.since.isoformat() if self.classifier.since else None
             ),
             "position_source": self.position_source.key,
+            # Which source actually produced *this* fix. With a composite source
+            # `position_source` is only "composite", so the useful provenance --
+            # exact trail point vs. approximate obstacle sighting -- lives here.
+            "position_fix_source": position.source if position is not None else None,
             "zone_count": len(self.zones.zones),
             # Provenance of the fix behind this state. Both are None for the
             # null source; an approximate, event-driven source (see

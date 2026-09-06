@@ -2,58 +2,35 @@
 
 **Read this before touching anything else in the room-awareness stack.**
 
-**DP 104 carries a real position trail. The earlier "settled negative" was our
-own encoding bug.** (Corrected 2026-09-02, superseding the 2026-09-01 finding.)
-
-Observed live on the LAN, decoded, with real coordinates:
-
-```
-{"cmd":102,"data":{"pathid":814,"type":2,"count":488,"curnums":6,"startno":482,
-                   "point":[[810,539],[796,535],[750,493],[718,461],[660,437],[594,411]]}}
-```
-
-So the reply shape is no longer a guess: the robot answers a
-`{"cmd":104,"data":{"startno":N}}` request with a `cmd:102` object whose points
-live under `data.point` -- **singular**, which is not a key the earlier decoder
-looked for. `count` is the total trail length so far, `startno` the index this
-batch begins at, and `curnums` its length, so the feed is incremental and
-resumable.
-
-Why it looked dead: the request was **hex**-encoded. tinytuya base64-decodes a
-raw datapoint, so a hex string went out as garbage bytes and the robot never
-saw a valid request. The "26 reads, 26 echoes" were our own mangled writes
-bouncing back. The same bug independently broke every DP 105 getter on
-2026-09-02 until it was found; the vendor app publishes hex because the Tuya
-*SDK* hex-decodes, which is a different client convention, not the wire format.
-
-**What is still unresolved: we cannot yet *elicit* the trail.** Correctly
-base64-encoded requests (`startno` 0, 1, 478, 900, 100000) sent during a real,
-active clean drew no reply -- verified in a passive capture that confirms our
-requests reached the wire intact. The vendor app calls the native
-`startMapLister()` and `initStartNo()` before its request loop, and that map
-session is the part not yet replicated.
-
-What does work today is **passive harvesting**: when the app's map screen is
-driving the loop, the robot's `cmd:102` replies are broadcast as ordinary DP 104
-updates and anything listening on the LAN sees the whole trail.
-
-`PathDataPositionSource` below therefore stays unreachable, but the reason has
-changed: not "this datapoint is empty" -- it demonstrably is not -- but "we
-cannot make it answer on demand, so a source built on it would silently produce
-nothing while claiming to be available".
+**DP 104 is a real position datapoint with a working decoder, and this module
+reads it passively.** The robot emits `cmd:102` replies -- `{"cmd":102,"data":
+{"pathid":829,"type":2,"count":649,"curnums":2,"startno":647,"point":[[x,y],
+...]}}` -- as ordinary DP 104 updates whenever a map session is running, which
+in practice means whenever the vendor app's map screen is open. Points are
+unscaled map cells in the same frame as DP 105 geometry; the feed is
+incremental (`startno` + `curnums`, running `count`) and the `pathid` changes
+per job. **Eliciting the trail ourselves is still unproven** -- writes of DP 106
+and of `startno` requests, in every order, with the robot docked and the app
+closed, drew no reply on 2026-09-05, consistent with the robot only ever
+emitting *new* points. So `PathTrailTracker` and `PathTrailPositionSource`
+below **never write DP 104**: they listen, accumulate, and go quiet when the
+feed does. A live-clean elicitation test is still outstanding.
 
 So position lives behind this interface and nowhere else. Zones, the room
 classifier, the capture services, staleness detection and the segment API are
-all built against `PositionSource`, and all of them are correct with the source
-being `NullPositionSource` -- i.e. with the answer permanently `None`.
+all built against `PositionSource`, and all of them remain correct when the
+answer is permanently `None` (`NullPositionSource`) -- which is still what a
+family without DP 104 gets.
 
-The one source that *does* produce coordinates is
-`AiObjectSightingPositionSource`: the robot's obstacle detector reports what it
-sees roughly where it is standing. It is **opt-in and off by default**, and its
-docstring is emphatic about what it is not. See `create_position_source()`.
+Two real sources exist. `PathTrailPositionSource` is **exact** but only fresh
+while the trail is flowing. `AiObjectSightingPositionSource` infers a rough
+position from where the robot spotted an obstacle; it is **opt-in, off by
+default**, and its docstring is emphatic about what it is not. When both are
+configured, `CompositePositionSource` asks them in that order. See
+`create_position_source()`.
 
 Nothing outside this module should mention DP 104, `startno`, the 0.1 scale, or
-any other property of the eventual source.
+any other property of a particular source.
 
 **Units contract.** `async_get_position()` returns coordinates in *raw map
 cells* -- the same frame DP 105 geometry uses (signed int16, origin-relative,
@@ -170,9 +147,8 @@ class NullPositionSource(PositionSource):
     def __init__(self, reason: str | None = None) -> None:
         """Store why no position is available, for the error messages."""
         self._reason = reason or (
-            "this robot has no working position datapoint -- DP 104 "
-            "(COMMAND_PATH_DATA) is confirmed dead on this firmware (see "
-            "position.py), and the optional AI-object sighting source is off"
+            "no position source is wired up: this robot family has no path-trail "
+            "datapoint (DP 104), and the optional AI-object sighting source is off"
         )
 
     @property
@@ -234,29 +210,38 @@ class StaticPositionSource(PositionSource):
         )
 
 
-# --- DP 104: REAL, BUT NOT YET ON DEMAND -------------------------------------
-# The datapoint carries a genuine position trail -- that is confirmed against
-# live hardware, with decoded coordinates. What is missing is a way to make the
-# robot answer *our* request; today the trail only flows while the vendor app's
-# map session drives it. Everything here is therefore correct-but-unreachable
-# code, kept ready for the day the map session is replicated. See the module
-# docstring.
+# --- DP 104: the path trail (real, decoded, read passively) -------------------
+# The datapoint carries a genuine position trail and the decoder below is
+# verified against live captures. Nothing here writes it: see the module
+# docstring for why elicitation is still unproven.
 
-#: **Still do not flip this -- but not for the reason it used to say.** The
-#: datapoint is real and its replies decode correctly. What is unverified is
-#: whether we can *elicit* one: correctly encoded requests during an active
-#: clean drew no answer, because the vendor app establishes a native map
-#: session (`startMapLister`) first. Enabling this would give the room
-#: classifier a source that produces nothing while claiming to be available.
-#: Flip it only once a request of ours has actually been answered.
+#: Retired. It used to gate `PathDataPositionSource`, which no longer exists --
+#: the trail source is built from observed values instead, so nothing gates.
+#: The name is kept, still False, because it now means exactly one narrower
+#: thing: **we have never made the robot answer a request of ours.** Passive
+#: reception is verified; on-demand elicitation is not.
 PATH_DATA_VERIFIED = False
 
 #: The evidence, in one line, so it travels with the error messages.
 PATH_DATA_EVIDENCE = (
-    "DP 104 does carry a position trail (cmd:102 with data.point, confirmed "
-    "2026-09-02), but it only flows while the vendor app's map session drives "
-    "it; our own correctly-encoded startno requests go unanswered"
+    "DP 104 carries a real position trail (cmd:102 with data.point) and is read "
+    "passively; it flows while a map session is running (in practice, the vendor "
+    "app's map screen). Requests of ours have never been answered, so nothing "
+    "here writes the datapoint"
 )
+
+#: How long a trail point stays usable as "where the robot is", in seconds.
+#:
+#: 90 s. Derived, not guessed: in a passive capture of a real job the robot
+#: emitted 30 `cmd:102` batches whose inter-batch gaps were 0.1-11.9 s for 26 of
+#: the 29 intervals (median 6.1 s). The four outliers -- 20.2, 36.4, 38.4, 41.9
+#: and one 107.8 s -- all fall in the stretch where the robot was stuck and
+#: therefore *not moving*, so a slightly stale fix there was still correct. 90 s
+#: is six coordinator polls (15 s each) and comfortably clears every gap seen
+#: while the robot was actually driving, while being far shorter than a job, so
+#: a trail that stops flowing mid-clean stops producing fixes rather than
+#: pinning the robot to the last place it was seen.
+TRAIL_STALE_SECONDS = 90.0
 
 #: Trail coordinates are used **as-is**, in the same map-cell frame as the
 #: DP 105 no-go rectangles and AI-object sightings.
@@ -272,6 +257,11 @@ PATH_SCALE = 1.0
 
 def encode_path_request(startno: int = 0) -> str:
     """Build the DP 104 request payload, base64-encoded.
+
+    **Nothing in the integration calls this, and nothing should.** It is a pure
+    encoder kept for out-of-tree probes: the robot has never answered a
+    request of ours, and the trail source is deliberately passive so that a
+    position read can never write to the robot's map channel.
 
     `startno` is the index into the path trail to resume from; the robot replies
     with `curnums` points beginning there and reports the running `count`.
@@ -313,16 +303,13 @@ def _hex_to_text(text: str) -> str | None:
 def decode_path_points(raw: Any) -> list[tuple[float, float]]:
     """Decode a DP 104 readback into map-cell points. Returns [] if it cannot.
 
-    UNVERIFIED, and written to be maximally forgiving because the shape of a
-    *populated* response is genuinely unknown -- the only response ever seen
-    was an echo of the request with an empty point list. Handles: a hex string
-    wrapping JSON, plain JSON, a bare list, and the point list nested under
-    `data.path`/`data.points`/`path`/`points`.
+    The real shape is `data.point` -- singular -- inside a `cmd:102` object;
+    the other keys are tolerated aliases kept because they cost nothing. A
+    request (`cmd:104`) has no point list and therefore correctly yields `[]`,
+    which is what stops our own echoes being counted as data.
 
-    GUESS: the 0.1 scale factor. The app divides trail coordinates by 10 for
-    display, which implies the wire values are decimetre-ish sub-cells; applying
-    it here is what makes the result comparable with DP 105 map-cell geometry.
-    If the probe shows otherwise, this constant is the only thing to change.
+    This is the low-level helper. `PathTrailTracker` is what the integration
+    uses, because a single batch is only a fragment of the trail.
     """
     if raw is None:
         return []
@@ -377,61 +364,332 @@ def decode_path_points(raw: Any) -> list[tuple[float, float]]:
     return points
 
 
-class PathDataPositionSource(PositionSource):
-    """DP 104 path-trail position source. **DEAD -- this does not work.**
+@dataclass(frozen=True)
+class PathBatch:
+    """One decoded `cmd:102` path batch."""
 
-    Kept as documentation of a refuted hypothesis, not as code anyone should
-    enable. It writes a `startno` request to the path datapoint and reads the
-    trail back out of the next coordinator poll. On this firmware the robot
-    answers that request with the request, unchanged, and never with a trail --
-    while docked *and* through a full active cleaning job. See
-    `PATH_DATA_EVIDENCE` and the module docstring.
+    pathid: int | None
+    count: int | None
+    startno: int
+    points: list[tuple[float, float]]
 
-    `create_position_source()` cannot return this class: `PATH_DATA_VERIFIED` is
-    False and nothing sets it.
+    @property
+    def curnums(self) -> int:
+        """How many points this batch actually carried."""
+        return len(self.points)
+
+
+def decode_path_reply(raw: Any) -> PathBatch | None:
+    """Decode a DP 104 value into a `PathBatch`, or None if it is not a reply.
+
+    `None` is the answer for anything that is not a `cmd:102` object carrying a
+    point list -- including the app's `cmd:104` `startno` requests and our own
+    write echoes, both of which appear on this datapoint constantly. The caller
+    is expected to count those separately rather than to treat them as errors.
+    """
+    if raw is None:
+        return None
+
+    payload: Any = raw
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8", "ignore")
+    if isinstance(payload, str):
+        text = payload.strip()
+        for decoder in (_b64_to_text, _hex_to_text):
+            decoded = decoder(text)
+            if decoded is not None:
+                text = decoded
+                break
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            return None
+
+    if not isinstance(payload, dict) or payload.get("cmd") != 102:
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    points = decode_path_points(payload)
+    if not points:
+        return None
+
+    startno = data.get("startno")
+    if not isinstance(startno, int) or isinstance(startno, bool) or startno < 0:
+        return None
+
+    def _opt_int(value: Any) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return PathBatch(
+        pathid=_opt_int(data.get("pathid")),
+        count=_opt_int(data.get("count")),
+        startno=startno,
+        points=points,
+    )
+
+
+class PathTrailTracker:
+    """Accumulates DP 104 `cmd:102` batches into one trail. **Passive only.**
+
+    One per config entry, owned by the coordinator, fed every value the poller
+    sees. It never writes anything: the robot emits new points on its own
+    schedule while a map session is running, and a request of ours has never
+    been answered (see the module docstring), so asking would only put write
+    traffic on the robot's map channel for nothing.
+
+    Three properties of the real feed shape the design, all observed in a
+    passive capture of a real job:
+
+    * **Batches overlap and repeat.** `startno` 636 (5 points, count 641) was
+      followed by `startno` 640 (1 point, count 641) -- the same point, twice.
+      Two listeners on the LAN see overlapping streams and the app re-requests
+      ranges it already has. So points are stored **by absolute index**
+      (`startno + i`), which makes a repeat idempotent instead of a duplicate.
+    * **`count` is the robot's total, not ours.** We only ever see the batches
+      that happened to be on the wire while we were listening, so `count` (649
+      in that capture) legitimately exceeds `points_held` (84). Reporting the
+      robot's number verbatim is the honest thing; conflating the two would
+      claim a complete trail we do not have.
+    * **`pathid` changes per job.** A new id means a new trail, so the
+      accumulation resets rather than splicing two jobs' coordinate streams
+      together.
     """
 
-    key = "dp_path_data"
+    def __init__(self) -> None:
+        """Start with an empty trail."""
+        #: Absolute index -> point, so overlapping batches collapse.
+        self._points: dict[int, tuple[float, float]] = {}
+        #: The current job's path id, or None if none has been seen.
+        self.pathid: int | None = None
+        #: The robot's own running total for this path. May exceed what we hold.
+        self.count: int | None = None
+        #: The highest-indexed point seen, i.e. the newest known position.
+        self.last_point: tuple[float, float] | None = None
+        #: `time.monotonic()` when `last_point` was observed.
+        self.observed_at: float | None = None
+        #: How many `cmd:102` batches have been ingested.
+        self.batches_seen = 0
+        #: Values that decoded but were not replies -- requests and echoes.
+        self.echoes_ignored = 0
+        #: How many times a new `pathid` forced a reset.
+        self.path_changes = 0
+        self._last_index: int | None = None
 
-    def __init__(self, dp: str, set_dp: Any = None) -> None:
-        """Bind to the path datapoint id and an optional DP writer."""
+    def ingest(self, value: Any, *, now: float | None = None) -> PathBatch | None:
+        """Feed one raw DP 104 value in. Returns the batch, or None.
+
+        Safe to call with anything, including None. A value that decodes to a
+        `cmd:104` request -- the app's, or one of ours echoed back -- counts
+        against `echoes_ignored` and changes nothing else.
+        """
+        batch = decode_path_reply(value)
+        if batch is None:
+            if value is not None:
+                self.echoes_ignored += 1
+            return None
+
+        if batch.pathid is not None and batch.pathid != self.pathid:
+            if self.pathid is not None:
+                self.path_changes += 1
+            self.reset(keep_counters=True)
+            self.pathid = batch.pathid
+
+        self.batches_seen += 1
+        if batch.count is not None:
+            # Monotonic in practice; take the larger so an out-of-order batch
+            # cannot walk the robot's total backwards.
+            self.count = (
+                batch.count if self.count is None else max(self.count, batch.count)
+            )
+
+        for offset, point in enumerate(batch.points):
+            self._points[batch.startno + offset] = point
+
+        highest = batch.startno + len(batch.points) - 1
+        if self._last_index is None or highest >= self._last_index:
+            self._last_index = highest
+            self.last_point = self._points[highest]
+            self.observed_at = time.monotonic() if now is None else now
+        return batch
+
+    @property
+    def points(self) -> list[tuple[float, float]]:
+        """Every point held, ordered by its index in the robot's trail."""
+        return [self._points[index] for index in sorted(self._points)]
+
+    @property
+    def points_held(self) -> int:
+        """How many distinct trail indices we have actually seen."""
+        return len(self._points)
+
+    @property
+    def age(self) -> float | None:
+        """Seconds since the newest point was observed, or None if never."""
+        if self.observed_at is None:
+            return None
+        return max(0.0, time.monotonic() - self.observed_at)
+
+    def as_attributes(self) -> dict[str, Any]:
+        """Attribute payload for the path-trail sensor."""
+        age = self.age
+        return {
+            "pathid": self.pathid,
+            "count": self.count,
+            "points_held": self.points_held,
+            "last_point": list(self.last_point) if self.last_point else None,
+            "age": None if age is None else round(age, 1),
+            "batches": self.batches_seen,
+            "path_changes": self.path_changes,
+            "echoes_ignored": self.echoes_ignored,
+        }
+
+    def reset(self, *, keep_counters: bool = False) -> None:
+        """Forget the trail -- for a new path id, a new job, or tests.
+
+        `keep_counters` preserves the lifetime diagnostics (`batches_seen`,
+        `echoes_ignored`, `path_changes`) across an automatic path change, so
+        the sensor's attributes do not appear to rewind mid-session.
+        """
+        self._points.clear()
+        self._last_index = None
+        self.pathid = None
+        self.count = None
+        self.last_point = None
+        self.observed_at = None
+        if not keep_counters:
+            self.batches_seen = 0
+            self.echoes_ignored = 0
+            self.path_changes = 0
+
+
+class PathTrailPositionSource(PositionSource):
+    """Exact position, taken from the newest point of the DP 104 trail.
+
+    This is the good source: real coordinates from the robot's own localisation,
+    in map cells, with no inference in between. Its weakness is not accuracy but
+    **availability** -- the trail only flows while a map session is running, and
+    we cannot start one (see the module docstring). So it produces exact fixes
+    for as long as something is driving the feed and honest `None`s the rest of
+    the time.
+
+    `available` is a *capability* answer and is True on any family with the
+    datapoint, which is the right contract: the family can report position, and
+    the capture services should not refuse up front. Whether a fix exists right
+    now is `async_get_position`'s question, and it answers None once the newest
+    point is older than `TRAIL_STALE_SECONDS`.
+
+    **It never writes.** A position read that pokes the robot's map channel is
+    exactly the failure this module exists to prevent.
+    """
+
+    key = "dp_path_trail"
+
+    def __init__(self, dp: str, tracker: PathTrailTracker) -> None:
+        """Bind to the path datapoint id and the shared trail tracker."""
         self._dp = dp
-        self._set_dp = set_dp
-        self._warned = False
+        self._tracker = tracker
 
     @property
     def available(self) -> bool:
-        """Always False. DP 104 is a settled negative, not a pending probe."""
-        return PATH_DATA_VERIFIED
+        """True: the datapoint is real and decodes on this family."""
+        return True
 
     @property
     def unavailable_reason(self) -> str:
-        """Explain the dead datapoint precisely, with the evidence attached."""
+        """Never used while `available` is True, but kept truthful anyway."""
         return (
-            f"DP {self._dp} (COMMAND_PATH_DATA) does not report position on this "
-            f"firmware -- {PATH_DATA_EVIDENCE}"
+            f"DP {self._dp} carries a real position trail but nothing has been "
+            "received yet; it only flows while a map session is running"
         )
+
+    @property
+    def last_fix_age(self) -> float | None:
+        """Seconds since the newest trail point, or None if there is none."""
+        return self._tracker.age
+
+    @property
+    def fresh(self) -> bool:
+        """Whether the trail is recent enough to be treated as a position."""
+        age = self.last_fix_age
+        return age is not None and age <= TRAIL_STALE_SECONDS
 
     async def async_get_position(
         self, dps: Mapping[str, Any]
     ) -> RobotPosition | None:
-        """Ask for the path trail and return its last point, if there is one."""
-        if self._set_dp is not None:
-            try:
-                await self._set_dp(self._dp, encode_path_request(0))
-            except Exception:  # noqa: BLE001 - a poll helper must not raise
-                if not self._warned:
-                    _LOGGER.debug(
-                        "bObsweep: DP %s path request failed", self._dp, exc_info=True
-                    )
-                    self._warned = True
-                return None
+        """Return the newest trail point, if it is fresh enough to mean anything.
 
-        points = decode_path_points(dps.get(self._dp))
-        if not points:
+        `dps` is ignored: the tracker is fed by the coordinator as values arrive,
+        which is the only place that sees DP 104 values a later value has already
+        overwritten in the merged snapshot.
+        """
+        point = self._tracker.last_point
+        if point is None or not self.fresh:
             return None
-        x, y = points[-1]
-        return RobotPosition(x=x, y=y, source=self.key)
+        return RobotPosition(
+            x=point[0],
+            y=point[1],
+            source=self.key,
+            approximate=False,
+            observed_at=self._tracker.observed_at,
+        )
+
+
+class CompositePositionSource(PositionSource):
+    """Asks each source in turn and returns the first fix. **Order, not age.**
+
+    The obvious alternative -- take whichever source has the freshest fix -- is
+    wrong here, because the sources are not of comparable quality. The trail is
+    the robot's own localisation, exact, in map cells. An AI-object sighting is
+    an *obstacle's* position standing in for the robot's, offset by the sensing
+    distance and capable of landing on the wrong side of a doorway. A
+    five-second-old sighting is still worse evidence than a forty-second-old
+    trail point, so a freshness rule would routinely downgrade a good fix to a
+    bad one. Staleness is handled where it belongs instead: each source refuses
+    to answer once its own evidence is too old, and the composite simply takes
+    the best source that is still willing to speak.
+
+    `key` stays `"composite"`; the fix itself carries the real provenance in
+    `RobotPosition.source`, which `rooms.py` surfaces as `position_fix_source`.
+    """
+
+    key = "composite"
+
+    def __init__(self, sources: Sequence[PositionSource]) -> None:
+        """Store the sources in priority order, best first."""
+        self.sources = list(sources)
+
+    @property
+    def available(self) -> bool:
+        """True when any member source could ever produce a fix."""
+        return any(source.available for source in self.sources)
+
+    @property
+    def unavailable_reason(self) -> str:
+        """Every member's reason, so nothing is hidden behind the composite."""
+        return "; ".join(source.unavailable_reason for source in self.sources)
+
+    @property
+    def last_fix_age(self) -> float | None:
+        """The freshest age any member reports, or None if none tracks age."""
+        ages = [
+            age
+            for age in (
+                getattr(source, "last_fix_age", None) for source in self.sources
+            )
+            if age is not None
+        ]
+        return min(ages) if ages else None
+
+    async def async_get_position(
+        self, dps: Mapping[str, Any]
+    ) -> RobotPosition | None:
+        """Return the first fix any source offers, in priority order."""
+        for source in self.sources:
+            position = await source.async_get_position(dps)
+            if position is not None:
+                return position
+        return None
 
 
 # --- the AI-object sighting source (opt-in) ----------------------------------
@@ -552,47 +810,73 @@ def create_position_source(
     *,
     ai_object_tracker: AiObjectTracker | None = None,
     ai_object_position: bool = False,
+    path_trail_tracker: PathTrailTracker | None = None,
 ) -> PositionSource:
     """Return the position source for a robot. **The single swap point.**
 
-    The default is `NullPositionSource`, because no datapoint on any family
-    reports real position:
+    Composition, best source first:
 
-    * SLAM's DP 104 is refuted -- see `PATH_DATA_EVIDENCE`.
-    * Vision has a `COMMAND_POSITION` datapoint (DP 216) whose payload shape is
-      undocumented in the app bundle -- no value from one has ever been observed.
-    * Random has no position concept at all; it does not map.
+    * **`PathTrailPositionSource`** whenever the family has DP 104 *and* the
+      caller supplied a `path_trail_tracker`. Exact coordinates, read passively.
+      The tracker is a required argument rather than something built here
+      because the coordinator has to feed it every DP 104 value as it arrives --
+      a source that only sees the merged snapshot would miss most of the trail.
+    * **`AiObjectSightingPositionSource`** when the user opted in and a tracker
+      was supplied. Approximate, sparse, event-driven; a *user* decision, which
+      is why it is a config-entry option defaulting to off. A coarse source
+      feeding room classification can produce confidently wrong room names, and
+      `rooms.py` exists specifically to avoid that failure mode.
 
-    Passing `ai_object_position=True` (SLAM, and only when a tracker is supplied)
-    swaps in `AiObjectSightingPositionSource`. That is a *user* decision, not
-    ours, which is why it is a config-entry option defaulting to off: a coarse
-    source feeding room classification can produce confidently wrong room names,
-    and `rooms.py` exists specifically to avoid that failure mode.
+    Both present means a `CompositePositionSource` in that order -- see its
+    docstring for why the rule is priority and not freshness. Neither present
+    means `NullPositionSource`, which is still the shipping default and still
+    correct for Vision (its DP 216 `COMMAND_POSITION` payload shape is
+    undocumented and no value from one has ever been observed) and for Random
+    (no position concept at all; it does not map).
+
+    `set_dp` is accepted for backwards compatibility and deliberately unused:
+    nothing on the position path writes to the robot any more.
     """
+    del set_dp  # nothing here writes; kept so existing callers keep working.
+
+    sources: list[PositionSource] = []
+
+    if spec.dp_path_data is not None and path_trail_tracker is not None:
+        sources.append(
+            PathTrailPositionSource(spec.dp_path_data, path_trail_tracker)
+        )
+
     if ai_object_position and spec.dp_transportation is not None:
         if ai_object_tracker is not None:
-            return AiObjectSightingPositionSource(
-                spec.dp_transportation, ai_object_tracker
+            sources.append(
+                AiObjectSightingPositionSource(
+                    spec.dp_transportation, ai_object_tracker
+                )
             )
-        _LOGGER.warning(
-            "bObsweep: AI-object position was requested but no object tracker "
-            "was supplied; falling back to no position source"
-        )
+        else:
+            _LOGGER.warning(
+                "bObsweep: AI-object position was requested but no object tracker "
+                "was supplied; that source will not be used"
+            )
 
-    if PATH_DATA_VERIFIED and spec.dp_path_data is not None:
-        return PathDataPositionSource(spec.dp_path_data, set_dp)
+    if len(sources) == 1:
+        return sources[0]
+    if sources:
+        return CompositePositionSource(sources)
 
-    if spec.dp_transportation is not None:
-        return NullPositionSource(
-            "no position source is enabled: DP 104 is dead on this firmware "
-            f"({PATH_DATA_EVIDENCE}). The approximate AI-object sighting source "
-            "can be switched on in this integration's options, but it is off by "
-            "default because it is sparse and only roughly indicates where the "
-            "robot is"
-        )
     if spec.dp_path_data is not None:
         return NullPositionSource(
-            PathDataPositionSource(spec.dp_path_data).unavailable_reason
+            f"no position source is wired up. {PATH_DATA_EVIDENCE}. Supply a "
+            "PathTrailTracker to read it, or switch on the approximate "
+            "AI-object sighting source in this integration's options"
+        )
+    if spec.dp_transportation is not None:
+        return NullPositionSource(
+            "no position source is enabled: this family has no path-trail "
+            "datapoint. The approximate AI-object sighting source can be "
+            "switched on in this integration's options, but it is off by "
+            "default because it is sparse and only roughly indicates where the "
+            "robot is"
         )
     return NullPositionSource(
         f"the {spec.key} bObsweep family has no known position datapoint"
