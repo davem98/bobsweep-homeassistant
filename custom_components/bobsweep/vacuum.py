@@ -541,8 +541,8 @@ async def async_setup_entry(
     platform.async_register_entity_service(
         SERVICE_SET_ROOM_NAME,
         {
-            # min=0: room 0 is a real id, not a sentinel. The reference unit's
-            # own schedule store names room 0 "classroom".
+            # min=0: room 0 is a real id, not a sentinel -- robots do assign it,
+            # and rejecting it leaves that room permanently unnameable.
             vol.Required("room_id"): vol.All(vol.Coerce(int), vol.Range(min=0)),
             vol.Required("name"): vol.All(
                 cv.string, vol.Length(min=1, max=MAX_ROOM_NAME_LENGTH)

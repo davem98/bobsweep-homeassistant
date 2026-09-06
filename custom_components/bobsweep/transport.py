@@ -1054,26 +1054,27 @@ def decode_rotate_angle(data: bytes) -> int | None:
 def derive_room_names(schedules: Iterable[ScheduleEntry]) -> dict[int, str]:
     """Map room id → name using **single-room schedules only**.
 
-    The robot has no room-name table on the LAN protocol, but this unit's owner
-    named each schedule after the rooms it targets, which makes the schedule
-    store an accidental room-name source: `classroom` targets room 0, so room 0
-    is the classroom.
+    The robot has no room-name table on the LAN protocol. But people tend to
+    name a schedule after the room it cleans, which turns the schedule store
+    into an accidental room-name source: a schedule called "Kitchen" that
+    targets room 4 tells you room 4 is the kitchen.
 
     **Multi-room schedules are excluded, and that exclusion is the whole point.**
-    A two-room entry's name describes the *pair* — "hall and kitchen" for ids
-    3 and 2 — and there is no way to tell which half belongs to which id, or
-    even that the name decomposes at all ("mudd" covers ids 5 and 4). Splitting
-    on " and " would produce confident, wrong names; assigning the whole name to
-    both ids would produce two rooms called "hall and kitchen". Neither is
-    better than saying nothing, so nothing is what this says.
+    A two-room entry's name describes the *pair* — something like "upstairs",
+    or a name joining two rooms — and there is no way to tell which half
+    belongs to which id, or even that the name decomposes at all. Splitting
+    on " and " would
+    produce confident, wrong names; assigning the whole name to both ids would
+    produce two rooms with the same name. Neither is better than saying nothing,
+    so nothing is what this says.
 
     Entries with an empty name contribute nothing. Where two single-room
     schedules name the same room, the later one wins — arbitrary, but the
     situation has never been observed and the alternative is equally arbitrary.
 
-    This is a *heuristic keyed to one household's naming habit*, not a protocol
-    feature. It is right for this unit and may be empty or nonsense for another,
-    which is why the caller must treat an empty dict as normal.
+    This is a *heuristic keyed to a naming habit*, not a protocol feature. It
+    may be empty, or nonsense, on a robot whose schedules are named some other
+    way, which is why the caller must treat an empty dict as normal.
     """
     names: dict[int, str] = {}
     for entry in schedules:
