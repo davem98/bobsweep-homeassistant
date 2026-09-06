@@ -127,8 +127,17 @@
           "wheel_sensor": "Wheel sensor"
         }
       },
+      "mop_cloth_dirt": {
+        "name": "Mop cloth dirt"
+      },
       "path_trail": {
         "name": "Path trail"
+      },
+      "saved_maps": {
+        "name": "Saved maps"
+      },
+      "schedules": {
+        "name": "Schedules"
       },
       "selected_rooms": {
         "name": "Selected rooms"
@@ -238,34 +247,6 @@
     }
   },
   "services": {
-    "set_mode": {
-      "name": "Set work mode",
-      "description": "Write a raw Tuya work-mode value to the robot's work-mode datapoint. The accepted values depend on the configured model family.",
-      "fields": {
-        "mode": {
-          "name": "Mode",
-          "description": "The Tuya work-mode enum value to send."
-        }
-      }
-    },
-    "empty_dustbin": {
-      "name": "Empty dustbin",
-      "description": "Trigger the auto-empty dock to empty the robot's onboard dustbin. Only the SLAM family has a self-emptying dock."
-    },
-    "set_dp": {
-      "name": "Set datapoint (raw)",
-      "description": "Advanced/debug: write a raw value to an arbitrary Tuya datapoint by id.",
-      "fields": {
-        "dp": {
-          "name": "Datapoint id",
-          "description": "The Tuya datapoint id to write (as a string, e.g. \"3\")."
-        },
-        "value": {
-          "name": "Value",
-          "description": "The value to write (string, integer, or boolean)."
-        }
-      }
-    },
     "capture_point": {
       "name": "Capture point",
       "description": "Record the robot's current position into a scratch buffer under a label. Fails with an explanation if the robot cannot report a position.",
@@ -276,19 +257,15 @@
         }
       }
     },
-    "start_zone_capture": {
-      "name": "Start zone capture",
-      "description": "Begin recording the robot's position into a named capture session. Drive the robot around the whole room, then call Stop zone capture.",
+    "clear_room_name": {
+      "name": "Clear room name",
+      "description": "Remove the name you gave a room id, so any name implied by the robot's own schedules shows again. Does nothing if that room was never named by hand.",
       "fields": {
-        "name": {
-          "name": "Zone name",
-          "description": "The room name to save the captured footprint under."
+        "room_id": {
+          "name": "Room id",
+          "description": "The robot's own room id whose name should be forgotten."
         }
       }
-    },
-    "stop_zone_capture": {
-      "name": "Stop zone capture",
-      "description": "End the running capture session, derive a room footprint from the sampled positions, and save it as a zone."
     },
     "delete_zone": {
       "name": "Delete zone",
@@ -299,6 +276,10 @@
           "description": "The name of the zone to delete (case-insensitive)."
         }
       }
+    },
+    "empty_dustbin": {
+      "name": "Empty dustbin",
+      "description": "Trigger the auto-empty dock to empty the robot's onboard dustbin. Only the SLAM family has a self-emptying dock."
     },
     "export_zones": {
       "name": "Export zones",
@@ -317,6 +298,62 @@
           "description": "Replace the entire stored zone set instead of merging into it."
         }
       }
+    },
+    "refresh_robot_info": {
+      "name": "Refresh robot info",
+      "description": "Re-read the robot's saved maps, local schedules, room names and mop-cloth status. Read-only: it sends only the vendor app's own named getter queries, never a command that changes anything. The integration already does this once automatically about ten seconds after startup, so you only need it after changing something in the bObsweep app."
+    },
+    "set_dp": {
+      "name": "Set datapoint (raw)",
+      "description": "Advanced/debug: write a raw value to an arbitrary Tuya datapoint by id.",
+      "fields": {
+        "dp": {
+          "name": "Datapoint id",
+          "description": "The Tuya datapoint id to write (as a string, e.g. \"3\")."
+        },
+        "value": {
+          "name": "Value",
+          "description": "The value to write (string, integer, or boolean)."
+        }
+      }
+    },
+    "set_mode": {
+      "name": "Set work mode",
+      "description": "Write a raw Tuya work-mode value to the robot's work-mode datapoint. The accepted values depend on the configured model family.",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "The Tuya work-mode enum value to send."
+        }
+      }
+    },
+    "set_room_name": {
+      "name": "Set room name",
+      "description": "Give one of the robot's room ids a name. The robot never sends a room-name table — names live in the vendor app, and the only names it reveals are indirect, inferred from schedules that target a single room. This is how you name all the rest. Names are stored per config entry and override anything inferred from a schedule.",
+      "fields": {
+        "room_id": {
+          "name": "Room id",
+          "description": "The robot's own room id, as reported in a room-clean acknowledgement (see the room-selection sensor attributes)."
+        },
+        "name": {
+          "name": "Name",
+          "description": "The name to show for this room."
+        }
+      }
+    },
+    "start_zone_capture": {
+      "name": "Start zone capture",
+      "description": "Begin recording the robot's position into a named capture session. Drive the robot around the whole room, then call Stop zone capture.",
+      "fields": {
+        "name": {
+          "name": "Zone name",
+          "description": "The room name to save the captured footprint under."
+        }
+      }
+    },
+    "stop_zone_capture": {
+      "name": "Stop zone capture",
+      "description": "End the running capture session, derive a room footprint from the sampled positions, and save it as a zone."
     }
   },
   "issues": {

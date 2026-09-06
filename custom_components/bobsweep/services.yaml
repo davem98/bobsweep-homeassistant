@@ -224,3 +224,75 @@ import_zones:
       default: false
       selector:
         boolean:
+
+# --- robot info / room names -------------------------------------------------
+# refresh_robot_info sends only the vendor app's own named read-only getters on
+# DP 105. Nothing else may ever be written to that datapoint: the same channel
+# carries map delete, room merge and start-cleaning.
+
+refresh_robot_info:
+  name: Refresh robot info
+  description: >-
+    Re-read the robot's saved maps, local schedules, room names and mop-cloth
+    status. Read-only: it sends only the vendor app's own named getter queries,
+    never a command that changes anything. The integration already does this
+    once automatically about ten seconds after startup, so you only need it
+    after changing something in the bObsweep app.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+
+set_room_name:
+  name: Set room name
+  description: >-
+    Give one of the robot's room ids a name. The robot never sends a room-name
+    table — names live in the vendor app, and the only names it reveals are
+    indirect, inferred from schedules that target a single room. This is how you
+    name all the rest. Names are stored per config entry and override anything
+    inferred from a schedule.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    room_id:
+      name: Room id
+      description: >-
+        The robot's own room id, as reported in a room-clean acknowledgement
+        (see the room-selection sensor attributes).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
+    name:
+      name: Name
+      description: The name to show for this room.
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
+clear_room_name:
+  name: Clear room name
+  description: >-
+    Remove the name you gave a room id, so any name implied by the robot's own
+    schedules shows again. Does nothing if that room was never named by hand.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    room_id:
+      name: Room id
+      description: The robot's own room id whose name should be forgotten.
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 0
+          max: 255
+          mode: box
