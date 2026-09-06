@@ -546,9 +546,9 @@ class BobsweepRobotInfoSensor(CoordinatorEntity[BobsweepCoordinator], SensorEnti
 class BobsweepSavedMapsSensor(BobsweepRobotInfoSensor):
     """How many floor maps the robot has saved, with their ids and names.
 
-    The names are the only free text this robot hands over locally, and they are
-    the user's own from the app ("first floor v5"). Multi-map units keep several;
-    a single-map unit reports one.
+    The names are the only free text this robot hands over locally, and they
+    are the user's own, as typed in the vendor app. Multi-map units keep
+    several; a single-map unit reports one.
     """
 
     def __init__(self, coordinator: BobsweepCoordinator) -> None:
