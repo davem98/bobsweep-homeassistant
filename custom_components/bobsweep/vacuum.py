@@ -46,12 +46,14 @@ _LOGGER = logging.getLogger(__name__)
 # area mapping in entity-registry options, and a `HassVacuumCleanArea` voice
 # intent for free.
 #
-# `hacs.json` declares a minimum HA of 2024.8.0 and this does not raise it. Both
-# halves are probed at import time and the whole feature is simply absent on an
-# older core -- no hard import, no version string comparison (which would be
-# wrong the moment a feature is backported), and nothing else in the integration
-# changes behaviour. On an HA that has it, taught zones become segments; on one
-# that does not, everything else works exactly as before.
+# This does not raise the integration's minimum, which `hacs.json` puts at
+# 2025.1.0 -- that floor comes from `VacuumActivity` below, not from segments.
+# Both halves of the segment API are probed at import time and the whole
+# feature is simply absent on an older core -- no hard import, no version
+# string comparison (which would be wrong the moment a feature is backported),
+# and nothing else in the integration changes behaviour. On an HA that has it,
+# taught zones become segments; on one that does not, everything else works
+# exactly as before.
 try:  # HA >= 2026.3
     from homeassistant.components.vacuum import Segment  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - depends on the running HA version
