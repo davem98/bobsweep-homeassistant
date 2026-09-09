@@ -5,7 +5,7 @@
   "config_flow": true,
   "documentation": "https://github.com/davem98/bobsweep-homeassistant",
   "integration_type": "device",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/davem98/bobsweep-homeassistant/issues",
   "requirements": ["tinytuya>=1.13.0"],
   "version": "0.4.0"
