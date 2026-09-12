@@ -23,3 +23,8 @@ __pycache__/
 # Owner's private research trail, planning notes, and key-extraction tooling.
 # Not part of the published integration. Stays local, never committed.
 /local/
+
+# Claude Code session data, plus the nested full checkouts it creates under
+# .claude/worktrees/. Transcripts and a second copy of the repo; never part of
+# the published integration.
+/.claude/
