@@ -172,6 +172,9 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
+            # HA is moving towards requiring this (it derives the entry for
+            # logging and for `ConfigEntryNotReady` handling).
+            config_entry=entry,
         )
 
         self.entry = entry

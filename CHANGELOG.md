@@ -8,6 +8,22 @@ an **UltraVision Pet Combo** (`slam` family). The `vision` and `random`
 families are derived from the vendor app's own datapoint tables and remain
 **unvalidated on hardware**; reports from owners of those models are welcome.
 
+## [0.4.1] — 2026-09-13
+
+### Fixed
+- **Deleting the integration left two files behind.** The saved zones and room
+  names for a config entry live in Home Assistant's storage under keys derived
+  from the entry id; nothing removed them when the entry was deleted. They are
+  now removed with it.
+- **The manifest declared `local_polling`.** The coordinator has listened on a
+  persistent socket since 0.2.0; the integration is `local_push`.
+
+### Changed
+- The coordinator now passes its config entry to Home Assistant's coordinator
+  base class, ahead of Home Assistant requiring it.
+- A retired internal flag that once gated the path-trail source was removed;
+  the finding it recorded now lives in a comment.
+
 ## [0.4.0] — 2026-09-06
 
 ### Added
