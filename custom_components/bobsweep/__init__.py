@@ -64,6 +64,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: BobsweepConfigEntry) ->
     return unloaded
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: BobsweepConfigEntry) -> None:
+    """Delete the entry's persisted zones and room names.
+
+    Both live in `.storage/` under keys derived from the entry id, so a deleted
+    entry would otherwise leave two orphaned files behind for good.
+    """
+    from .room_names import RoomNameStore  # noqa: PLC0415
+    from .zones import ZoneStore  # noqa: PLC0415
+
+    await ZoneStore(hass, entry.entry_id).async_remove()
+    await RoomNameStore(hass, entry.entry_id).async_remove()
+
+
 async def _async_update_listener(hass: HomeAssistant, entry: BobsweepConfigEntry) -> None:
     """Reload the config entry when its options change."""
     await hass.config_entries.async_reload(entry.entry_id)

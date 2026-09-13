@@ -218,17 +218,14 @@ class StaticPositionSource(PositionSource):
 # verified against live captures. Nothing here writes it -- and that is now a
 # conclusion rather than a caution; see below.
 
-#: Retired as a gate -- it used to guard a `PathDataPositionSource` that no
-#: longer exists, and the trail source is built from observed values instead.
-#: The name is kept, still False, because it now records a settled fact rather
-#: than a pending experiment: **the robot will not answer a trail request that
-#: arrives over the LAN.** Requests were sent while docked and during a live
-#: clean, alone and paired with the map-request datapoint, in both orders, and
-#: drew nothing but echoes. Instrumenting the vendor app showed why: it asks
-#: over the cloud, its request bytes are *identical* to ours, and the robot
-#: honours the cloud copy while ignoring the local one. The channel is the
-#: discriminator, so there is no better-formed local request left to find.
-PATH_DATA_VERIFIED = False
+# Settled, not pending: **the robot will not answer a trail request that arrives
+# over the LAN.** Requests were sent while docked and during a live clean, alone
+# and paired with the map-request datapoint, in both orders, and drew nothing but
+# echoes. Instrumenting the vendor app showed why: it asks over the cloud, its
+# request bytes are *identical* to ours, and the robot honours the cloud copy
+# while ignoring the local one. The channel is the discriminator, so there is no
+# better-formed local request left to find. (A `PATH_DATA_VERIFIED` flag used to
+# record this; it gated nothing and was removed in 0.4.1.)
 
 #: The evidence, in one line, so it travels with the error messages.
 PATH_DATA_EVIDENCE = (
