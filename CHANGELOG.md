@@ -8,6 +8,20 @@ an **UltraVision Pet Combo** (`slam` family). The `vision` and `random`
 families are derived from the vendor app's own datapoint tables and remain
 **unvalidated on hardware**; reports from owners of those models are welcome.
 
+## [Unreleased]
+
+### Added
+- **Job-ending faults alert too.** The stuck sensor, notification and
+  `bobsweep_stuck` event now also fire for any real fault that ends a job
+  while the robot is off the dock (a jammed brush, for instance), with a
+  `kind` attribute of `fault` to tell it from a genuine `stuck`. Faults
+  reported while docked do not alert.
+- **Rooms for scheduled cleans.** The robot's own scheduled cleans send no
+  room-selection acknowledgement, so the job's rooms are now taken from the
+  stored schedule whose weekday and time the job started on. Stuck events
+  and obstacle records name the schedule; `rooms_source` says whether the
+  rooms came from an acknowledgement or a schedule.
+
 ## [0.5.0] — 2026-09-26
 
 ### Added

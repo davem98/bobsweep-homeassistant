@@ -289,16 +289,20 @@ class BobsweepBinarySensor(CoordinatorEntity[BobsweepCoordinator], BinarySensorE
 
 
 class BobsweepStuckBinarySensor(CoordinatorEntity[BobsweepCoordinator], BinarySensorEntity):
-    """Is the robot stuck right now -- and, as best we can tell, where.
+    """Is the robot stranded right now -- and, as best we can tell, where.
 
     Not a raw datapoint. `stuck.StuckMonitor` (owned by the coordinator) watches
-    the decoded fault list for the *transition* into a fault that means the
-    robot cannot move on its own (`stuck.STUCK_FAULTS`), and freezes everything
-    known at that moment into an event: the fault, the status, the rooms the
-    job was told to clean, and the last known position with its provenance and
-    age. The attributes here are that event -- the active one while stuck, the
-    most recent one afterwards -- including the human `message` the persistent
-    notification uses.
+    the decoded fault list for the *transition* into either a fault that means
+    the robot cannot move on its own (`stuck.STUCK_FAULTS`) or, while a job is
+    open and the robot is off the dock, any other fault that ends the job (a
+    jammed brush -- the robot can move but will not, and sits where it
+    stopped). It freezes everything known at that moment into an event: the
+    `kind`, the fault, the status, the rooms the job was told to clean (from
+    the robot's acknowledgement, or from the schedule the job started on), and
+    the last known position with its provenance and age. The attributes here
+    are that event -- the active one while stranded, the most recent one
+    afterwards -- including the human `message` the persistent notification
+    uses.
 
     Location is best-effort and says so. Measured on hardware (2026-09-02) the
     stuck fault arrived with no position on any datapoint; the only fix was a

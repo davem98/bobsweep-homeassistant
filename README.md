@@ -184,29 +184,43 @@ positional evidence was the path trail, whose last point was 0.4 s old — and
 the trail only flows while the vendor app's map screen is open (see
 [Room awareness](#room-awareness)).
 
-So the integration alerts on the *transition* into a stuck fault and attaches
-the best location it honestly has:
+So the integration alerts on the *transition* into a stranded state and
+attaches the best location it honestly has. Two things count: a **stuck**
+fault (the robot says it cannot move), and **any other fault that ends a job
+while the robot is off the dock** — a jammed side brush nine minutes into a
+scheduled clean leaves it asleep on the floor just as surely, and that case
+is the one that actually happened. Faults reported while docked are not
+alerts; the robot is home. The `kind` attribute (`stuck` / `fault`) tells
+them apart.
 
 - **`binary_sensor.<name>_stuck`** (problem class) is on while a fault meaning
   "cannot move on its own" is active — `bob_stuck`, a wheel fault, a bumper
-  held pressed, a cliff sensor, or the robot reporting itself boxed in. It
-  clears when the fault bit drops or the robot turns up on the dock. Its
-  attributes are the event: the fault, all active faults, the status, the
-  rooms the job was told to clean (when a room selection is known for this
-  job), the last known position with its source, exactness and age, the taught
+  held pressed, a cliff sensor, or the robot reporting itself boxed in — or
+  while a job-ending fault is active off the dock. It clears when the fault
+  bits drop or the robot turns up on the dock. Its attributes are the event:
+  the `kind`, the fault, all active faults, the status, the rooms the job
+  was told to clean (when known for this job, with `rooms_source` and the
+  schedule name), the last known position with its source, exactness and age, the taught
   zone that position falls in, the nearest reported obstacle, and a `message`.
 - **`sensor.<name>_last_stuck`** (timestamp, diagnostic) keeps the most recent
   event after the robot is freed.
-- A **persistent notification** titled "bObsweep is stuck" is created on the
-  transition and dismissed when it clears.
+- A **persistent notification** titled "bObsweep is stuck" (or "bObsweep
+  stopped: <fault>") is created on the transition and dismissed when it clears.
 - Events **`bobsweep_stuck`** and **`bobsweep_stuck_cleared`** fire on the bus
   with the same payload plus `device_id` and `entry_id`.
+
+The rooms come from the robot's acknowledgement of a room-clean command when
+there is one, and otherwise — because the robot's **own scheduled cleans send
+no acknowledgement** — from the stored schedule whose weekday and time the
+job started on, named in the message (`rooms_source` says which).
 
 The message reads, for example, `Stuck (bob_stuck) while cleaning Studio and
 Pantry; in Studio; last known position (1922, 1233), 0.4 s before the fault
 (exact); nearest obstacle: shoes, 103 cells away`. With the app closed it
 reads `Stuck (bob_stuck); position unknown (no map session was open)` — the
-truthful answer rather than a stale guess. A fix older than ten minutes is
+truthful answer rather than a stale guess; a job-ending fault reads `Stopped
+by a side_brush fault while cleaning Loft (the 10:30 "weekday" schedule);
+position unknown (no map session was open)`. A fix older than ten minutes is
 not reported as the location at all; the message says how old it was.
 
 A mobile notification from the event:

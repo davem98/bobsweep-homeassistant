@@ -50,7 +50,7 @@ import select
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Sequence
 
 import tinytuya
@@ -149,6 +149,16 @@ GETTER_GAP_SECONDS = 1.5
 # -- platforms forwarded, entities added, the first push burst absorbed --
 # rather than competing with setup for the single I/O thread.
 STARTUP_ROBOT_INFO_DELAY_SECONDS = 10.0
+
+
+def _local_now() -> datetime:
+    """Home Assistant's configured local time, or the system's if HA is absent."""
+    try:
+        from homeassistant.util import dt as dt_util  # noqa: PLC0415
+
+        return dt_util.now()
+    except Exception:  # noqa: BLE001 - stubbed core in the offline harness
+        return datetime.now().astimezone()
 
 
 class _TransportError(Exception):
@@ -731,7 +741,10 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # plus the trackers' latest state, so they run last. Each `observe`
         # swallows its own errors -- nothing here may break ingest.
         if self.spec.dp_status in dps:
-            self.jobs.observe(dps[self.spec.dp_status])
+            # Local time on purpose: a job's start is matched against the
+            # robot's schedule table, which holds local HH:MM (see
+            # `insights.rooms_for_job`). The id the tracker derives is UTC.
+            self.jobs.observe(dps[self.spec.dp_status], now=_local_now())
         if self.stuck is not None:
             self.stuck.observe(self, self._dps)
         if self.obstacle_insights is not None:

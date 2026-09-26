@@ -89,6 +89,18 @@ STUCK_FAULTS: frozenset[str] = frozenset(
 #: not measured.
 MAX_POSITION_AGE_SECONDS = 600.0
 
+#: Faults that do **not** end a job, so they never open a ``"fault"`` event on
+#: their own: the robot keeps driving through them (and usually clears them).
+#: ``charging_station`` is set alongside `bob_stuck` in the measured 2026-09-02
+#: event, 16 s *before* it, during the return trip -- alerting on it would
+#: pre-empt the real stuck alert with the wrong fault. The three bearings
+#: faults are excluded for the reason given under `STUCK_FAULTS`. A fault
+#: that is not here and not a stuck slug is assumed to stop the robot, which
+#: is the safe default: a missed alert is the failure this exists to fix.
+NON_STOPPING_FAULTS: frozenset[str] = frozenset(
+    {"charging_station", "localization", "positioning", "navigation"}
+)
+
 
 def _utcnow() -> datetime:
     """Timezone-aware UTC now; a function so tests can patch it."""
@@ -98,6 +110,11 @@ def _utcnow() -> datetime:
 def stuck_faults_in(faults: Iterable[str]) -> tuple[str, ...]:
     """The stuck slugs present in an active-fault list, in report order."""
     return tuple(slug for slug in faults if slug in STUCK_FAULTS)
+
+
+def stopping_faults_in(faults: Iterable[str]) -> tuple[str, ...]:
+    """The slugs that end a job: everything but `NON_STOPPING_FAULTS`."""
+    return tuple(slug for slug in faults if slug not in NON_STOPPING_FAULTS)
 
 
 # --- the event ---------------------------------------------------------------
@@ -121,17 +138,40 @@ class PositionFix:
 
 @dataclass(frozen=True)
 class StuckEvent:
-    """One transition into a stuck state, frozen at the moment it happened."""
+    """One transition into a stranded state, frozen at the moment it happened.
 
-    #: The slug that triggered the event (the first stuck slug in `faults`).
+    Two kinds, on one channel because a person wants one alert either way:
+
+    * ``"stuck"`` -- a slug from `STUCK_FAULTS` appeared: the robot says it
+      cannot move.
+    * ``"fault"`` -- any other real fault appeared while a job was open and the
+      robot was off the dock. It can move, but it will not: the job is over and
+      it is sitting wherever it was. Measured 2026-09-26: a `side_brush`
+      (jammed side brush) nine minutes into a scheduled clean left the robot
+      asleep on the floor for hours with nothing reporting it, because a brush
+      jam is not "stuck". Faults while docked (a full bin, a dry tank) are not
+      this: the robot is home.
+    """
+
+    #: The slug that triggered the event (the first stuck slug, or the first
+    #: fault for a ``"fault"`` kind).
     primary: str
     #: Every active fault slug at the time, stuck or not, in report order.
     faults: tuple[str, ...]
     #: The status DP value at the time (`standby` in the measured event).
     status: str | None
-    #: The rooms the current job was told to clean, if a selection is known.
+    #: ``"stuck"`` or ``"fault"``; see the class docstring.
+    kind: str = "stuck"
+    #: The rooms the current job was told to clean, if known.
     #: Each is `{"id": int, "name": str}`; the name falls back to `Room <id>`.
     rooms: tuple[Mapping[str, Any], ...] = ()
+    #: How the rooms are known: ``"ack"`` (the robot's 0x22), ``"schedule"``
+    #: (the job started on one of the robot's stored schedules), or None.
+    rooms_source: str | None = None
+    #: The matched schedule's name and `HH:MM`, when `rooms_source` is
+    #: ``"schedule"``.
+    schedule: str | None = None
+    schedule_time: str | None = None
     #: Last known position, or None when there is no usable fix.
     position: PositionFix | None = None
     #: Age of a fix that existed but was too old to report, else None.
@@ -164,10 +204,14 @@ class StuckEvent:
                 ),
             }
         return {
+            "kind": self.kind,
             "primary": self.primary,
             "faults": list(self.faults),
             "status": self.status,
             "rooms": [dict(room) for room in self.rooms],
+            "rooms_source": self.rooms_source,
+            "schedule": self.schedule,
+            "schedule_time": self.schedule_time,
             "position": position,
             "stale_fix_age": (
                 None if self.stale_fix_age is None else round(self.stale_fix_age, 1)
@@ -212,15 +256,23 @@ def describe(event: StuckEvent) -> str:
 
     Example: ``Stuck (bob_stuck) while cleaning Studio and Pantry; in Studio;
     last known position (1922, 1233), 0.4 s before the fault (exact); nearest
-    obstacle: shoes, 140 cells away``.
+    obstacle: shoes, 140 cells away``. A ``"fault"`` kind opens with
+    ``Stopped by a side_brush fault while cleaning Loft (the 10:30 "weekday"
+    schedule)`` instead.
     """
     parts: list[str] = []
 
-    head = f"Stuck ({event.primary})"
+    if event.kind == "fault":
+        head = f"Stopped by a {event.primary} fault"
+    else:
+        head = f"Stuck ({event.primary})"
     if event.rooms:
         head += " while cleaning " + _join_names(
             [str(room.get("name", f"Room {room.get('id')}")) for room in event.rooms]
         )
+    if event.rooms_source == "schedule":
+        label = f'the {event.schedule_time} "{event.schedule}" schedule' if event.schedule else f"the {event.schedule_time} schedule"
+        head += (" (" if event.rooms else " during ") + label + (")" if event.rooms else "")
     parts.append(head)
 
     if event.room:
@@ -277,17 +329,19 @@ def nearest_obstacle(
 
 
 class StuckMonitor:
-    """Detects the transition into (and out of) a stuck state.
+    """Detects the transition into (and out of) a stranded state.
 
     Fed once per ingest with the decoded `FaultReport` and whatever context is
-    to hand. It looks only at *edges*: a stuck slug appearing where none was
-    active produces a `StuckEvent`; the slug disappearing, or the status
-    landing in a docked state, clears it. A stuck slug that stays set for an
-    hour produces exactly one event, which is what a notification wants.
+    to hand. It looks only at *edges*. Two edges open an event (see
+    `StuckEvent` for why both matter): a stuck slug appearing where none was
+    active; or, with `job_open` and the status off the dock, any real fault
+    appearing where none was active. The faults all dropping, or the status
+    landing in a docked state, clears it. A fault that stays set for an hour
+    produces exactly one event, which is what a notification wants.
 
-    `active` is the event for the current stuck state or None; `last` is the
-    most recent event whether or not it has cleared, so a sensor can keep
-    showing "the last time it got stuck" after the robot is back on the dock.
+    `active` is the event for the current state or None; `last` is the most
+    recent event whether or not it has cleared, so a sensor can keep showing
+    "the last time" after the robot is back on the dock.
     """
 
     def __init__(
@@ -308,32 +362,56 @@ class StuckMonitor:
         faults: Iterable[str],
         *,
         status: Any = None,
+        job_open: bool = False,
         room_ids: Sequence[int] | None = None,
         room_names: Mapping[int, str] | None = None,
+        rooms_source: str | None = None,
+        schedule: str | None = None,
+        schedule_time: str | None = None,
         position: PositionFix | None = None,
         resolve_zone: Callable[[float, float], str | None] | None = None,
         objects: Iterable[Any] | None = None,
         now: datetime | None = None,
     ) -> str | None:
-        """Feed one observation. Returns `"stuck"`, `"cleared"`, or None.
+        """Feed one observation. Returns `"stuck"`, `"fault"`, `"cleared"`, or None.
 
-        `faults` is `FaultReport.faults` (active slugs). `position` is the
+        `faults` is `FaultReport.faults` (active slugs, notes excluded).
+        `job_open` says a cleaning job has begun and not been followed by a
+        return to the dock (the coordinator's job tracker). `position` is the
         best fix the caller has, *with its age*; the cut-off is applied here.
         `resolve_zone(x, y)` names the taught zone at a point, or None.
         `objects` is the current obstacle list, newest first.
         """
+        faults = tuple(faults)
         active_stuck = stuck_faults_in(faults)
+        stopping = stopping_faults_in(faults)
         status_text = None if status is None else str(status)
+        docked = status_text in self.docked_statuses
 
-        if self.active is None:
-            if not active_stuck:
+        # A stuck slug arriving while a lesser "fault" event is active upgrades
+        # it: the stuck alert is the precise one and must not be masked by a
+        # brush jam reported a moment earlier. It counts as a new event.
+        upgrade = (
+            self.active is not None and self.active.kind == "fault" and bool(active_stuck)
+        )
+
+        if self.active is None or upgrade:
+            if active_stuck:
+                kind, primary = "stuck", active_stuck[0]
+            elif stopping and job_open and not docked:
+                kind, primary = "fault", stopping[0]
+            else:
                 return None
             self.active = self._build_event(
-                primary=active_stuck[0],
-                faults=tuple(faults),
+                kind=kind,
+                primary=primary,
+                faults=faults,
                 status=status_text,
                 room_ids=room_ids,
                 room_names=room_names or {},
+                rooms_source=rooms_source,
+                schedule=schedule,
+                schedule_time=schedule_time,
                 position=position,
                 resolve_zone=resolve_zone,
                 objects=objects,
@@ -341,11 +419,14 @@ class StuckMonitor:
             )
             self.last = self.active
             self.events_seen += 1
-            return "stuck"
+            return kind
 
-        # Stuck already: clear on the fault dropping, or on the robot turning
-        # up on the dock (someone carried it back and the bit lags).
-        if not active_stuck or status_text in self.docked_statuses:
+        # Already alerting: clear on the faults dropping, or on the robot
+        # turning up on the dock (someone carried it back and the bit lags).
+        # A "stuck" event clears as soon as the stuck slug itself is gone, even
+        # if a lesser fault remains -- that is the old behaviour, kept.
+        gone = not active_stuck if self.active.kind == "stuck" else not stopping
+        if gone or docked:
             self.active = None
             return "cleared"
         return None
@@ -353,11 +434,15 @@ class StuckMonitor:
     def _build_event(
         self,
         *,
+        kind: str,
         primary: str,
         faults: tuple[str, ...],
         status: str | None,
         room_ids: Sequence[int] | None,
         room_names: Mapping[int, str],
+        rooms_source: str | None,
+        schedule: str | None,
+        schedule_time: str | None,
         position: PositionFix | None,
         resolve_zone: Callable[[float, float], str | None] | None,
         objects: Iterable[Any] | None,
@@ -389,10 +474,14 @@ class StuckMonitor:
                 nearest = nearest_obstacle(objects, usable.x, usable.y)
 
         return StuckEvent(
+            kind=kind,
             primary=primary,
             faults=faults,
             status=status,
             rooms=rooms,
+            rooms_source=rooms_source if rooms or rooms_source == "schedule" else None,
+            schedule=schedule,
+            schedule_time=schedule_time,
             position=usable,
             stale_fix_age=stale_age,
             room=room,
@@ -413,26 +502,30 @@ class StuckMonitor:
 EVENT_STUCK = "bobsweep_stuck"
 EVENT_STUCK_CLEARED = "bobsweep_stuck_cleared"
 NOTIFICATION_TITLE = "bObsweep is stuck"
+NOTIFICATION_TITLE_FAULT = "bObsweep stopped: {fault}"
 
 
-def _selection_room_ids(coordinator: Any) -> list[int] | None:
-    """Room ids of the current job's selection, if there is one for *this* job.
+def _job_rooms(coordinator: Any) -> Any | None:
+    """The current job's rooms (`insights.JobRooms`), if known for *this* job.
 
     The 0x22 ack is remembered until the next one, so a selection from last
-    Tuesday's room clean must not be pinned on today's whole-house run. The job
-    tracker (see `insights.JobTracker`) knows when the current job started, and
-    `insights.selection_for_job` applies the rule.
+    Tuesday's room clean must not be pinned on today's whole-house run; and a
+    job the robot started on its own schedule has no ack at all, so the
+    schedule table is the fallback. `insights.rooms_for_job` applies both
+    rules; the job tracker's start time is already in local time.
     """
-    tracker = getattr(coordinator, "room_selection", None)
     jobs = getattr(coordinator, "jobs", None)
-    if tracker is None:
-        return None
+    robot_info = getattr(coordinator, "robot_info", None)
     try:
-        from .insights import selection_for_job  # noqa: PLC0415
+        from .insights import rooms_for_job  # noqa: PLC0415
 
-        return selection_for_job(tracker, jobs)
+        return rooms_for_job(
+            getattr(coordinator, "room_selection", None),
+            jobs,
+            getattr(robot_info, "schedules", None),
+        )
     except Exception:  # noqa: BLE001
-        _LOGGER.debug("bObsweep: selection lookup failed", exc_info=True)
+        _LOGGER.debug("bObsweep: job room lookup failed", exc_info=True)
         return None
 
 
@@ -519,16 +612,23 @@ class StuckAlerter:
         ai_objects = getattr(coordinator, "ai_objects", None)
         objects = getattr(ai_objects, "objects", None) or []
 
+        jobs = getattr(coordinator, "jobs", None)
+        found = _job_rooms(coordinator)
+
         transition = self.monitor.update(
             report.faults,
             status=status,
-            room_ids=_selection_room_ids(coordinator),
+            job_open=getattr(jobs, "job", None) is not None,
+            room_ids=None if found is None else list(found.room_ids),
             room_names=room_names,
+            rooms_source=None if found is None else found.source,
+            schedule=None if found is None else found.schedule,
+            schedule_time=None if found is None else found.schedule_time,
             position=position_fix_from(coordinator),
             resolve_zone=resolve_zone,
             objects=objects,
         )
-        if transition == "stuck" and self.monitor.active is not None:
+        if transition in ("stuck", "fault") and self.monitor.active is not None:
             self._announce(self.monitor.active)
         elif transition == "cleared":
             self._clear()
@@ -552,7 +652,11 @@ class StuckAlerter:
             persistent_notification.async_create(
                 self.hass,
                 event.message,
-                title=NOTIFICATION_TITLE,
+                title=(
+                    NOTIFICATION_TITLE_FAULT.format(fault=event.primary)
+                    if event.kind == "fault"
+                    else NOTIFICATION_TITLE
+                ),
                 notification_id=self.notification_id,
             )
         except Exception:  # noqa: BLE001 - the component may be absent
