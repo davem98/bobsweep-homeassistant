@@ -8,7 +8,7 @@ an **UltraVision Pet Combo** (`slam` family). The `vision` and `random`
 families are derived from the vendor app's own datapoint tables and remain
 **unvalidated on hardware**; reports from owners of those models are welcome.
 
-## [Unreleased]
+## [0.5.0] — 2026-09-26
 
 ### Added
 - **Room-targeted cleaning.** `bobsweep.clean_rooms` starts a clean of one or

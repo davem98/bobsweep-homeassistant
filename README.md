@@ -265,8 +265,9 @@ room ids it targets and the name its owner typed. A schedule for a single room
 is therefore the robot naming that room.
 
 The integration reads those schedules at startup and derives an id → name map
-from the single-room entries only. A schedule covering two rooms ("downstairs" for ids 3 and 2) names a *pair*, and which half is which is genuinely
-unknowable from the data, so those are deliberately not split.
+from the single-room entries only. A schedule covering two rooms (say,
+"downstairs" for ids 3 and 2) names a *pair*, and which half is which is
+genuinely unknowable from the data, so those are deliberately not split.
 
 Anything left unnamed you can name yourself with `bobsweep.set_room_name`, and
 undo with `bobsweep.clear_room_name`; your names are stored by this
