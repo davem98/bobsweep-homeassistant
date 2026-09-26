@@ -141,6 +141,20 @@
       },
       "selected_rooms": {
         "name": "Selected rooms"
+      },
+      "last_stuck": {
+        "name": "Last stuck"
+      },
+      "last_obstacle": {
+        "name": "Last obstacle"
+      },
+      "obstacle_insights": {
+        "name": "Obstacle insights"
+      }
+    },
+    "binary_sensor": {
+      "stuck": {
+        "name": "Stuck"
       }
     },
     "switch": {
@@ -266,6 +280,10 @@
           "description": "Room names and/or ids, as a list or comma-separated text."
         }
       }
+    },
+    "clear_obstacle_history": {
+      "name": "Clear obstacle history",
+      "description": "Forget every recorded obstacle sighting for this robot. The per-job tallies, 30-day counts and hotspots start again from nothing; the robot's own current-job obstacle list is not affected."
     },
     "clear_room_name": {
       "name": "Clear room name",

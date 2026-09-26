@@ -72,9 +72,11 @@ from .const import (
     FamilySpec,
     resolve_family,
 )
+from .insights import JobTracker, ObstacleHistoryStore, ObstacleInsightsRecorder
 from .position import PathTrailTracker, PositionSource, create_position_source
 from .room_names import RoomNameStore
 from .rooms import RoomTracker
+from .stuck import StuckAlerter, StuckMonitor
 from .transport import (
     CMD_CLEAN_SELECT_ROOMS,
     GETTER_FRAMES,
@@ -263,6 +265,43 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entry_id=entry.entry_id,
             device_id=self.device_id,
         )
+        # Cleaning-job boundaries, inferred from the status DP (see insights.py).
+        # Family-independent: every family has a status DP and cleaning statuses.
+        self.jobs = JobTracker(
+            cleaning_statuses=self.spec.status_cleaning,
+            docked_statuses=self.spec.status_docked,
+        )
+        # Stuck detection (see stuck.py). Exists whenever the family has a fault
+        # DP to detect it on -- the same gate as the `problem` binary sensor.
+        self.stuck: StuckAlerter | None = (
+            StuckAlerter(
+                hass,
+                entry_id=entry.entry_id,
+                device_id=self.device_id,
+                monitor=StuckMonitor(docked_statuses=self.spec.status_docked),
+            )
+            if any(
+                dp is not None
+                for dp in (self.spec.dp_error, self.spec.dp_error2, self.spec.dp_error3)
+            )
+            else None
+        )
+        # Persisted obstacle history (see insights.py), fed from `ai_objects`
+        # without consuming its one-shot sighting hand-off. `async_setup()`
+        # loads it with the zones and room names.
+        self.obstacle_store: ObstacleHistoryStore | None = (
+            ObstacleHistoryStore(hass, entry.entry_id) if self.ai_objects is not None else None
+        )
+        self.obstacle_insights: ObstacleInsightsRecorder | None = (
+            ObstacleInsightsRecorder(
+                hass,
+                entry_id=entry.entry_id,
+                device_id=self.device_id,
+                store=self.obstacle_store,
+            )
+            if self.obstacle_store is not None
+            else None
+        )
 
         # The robot pushes PARTIAL updates (often just {"6": <battery>}).
         # Accumulate every datapoint ever seen so a partial push doesn't blank
@@ -298,6 +337,8 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Load persisted state and start the listener thread."""
         await self.zone_store.async_load()
         await self.room_name_store.async_load()
+        if self.obstacle_store is not None:
+            await self.obstacle_store.async_load()
         self._start_thread()
         self._schedule_startup_robot_info()
 
@@ -685,6 +726,16 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             value = dps.get(self.spec.dp_transportation)
             if value is not None:
                 self.robot_info.ingest(value)
+        # Downstream of the trackers above, and on purpose: job boundaries,
+        # stuck detection and obstacle insights all read the *merged* snapshot
+        # plus the trackers' latest state, so they run last. Each `observe`
+        # swallows its own errors -- nothing here may break ingest.
+        if self.spec.dp_status in dps:
+            self.jobs.observe(dps[self.spec.dp_status])
+        if self.stuck is not None:
+            self.stuck.observe(self, self._dps)
+        if self.obstacle_insights is not None:
+            self.obstacle_insights.observe(self, self._dps)
         # --- end per-DP consumers ---------------------------------------
 
         snapshot = dict(self._dps)

@@ -117,7 +117,8 @@ rather than showing up permanently unknown.
   weekdays, times, target room ids, vacuum power, mop intensity and names; Mop
   cloth dirt is a percentage. All three read *unknown* until the robot answers.
 - **Binary sensors**: self-emptying (SLAM only), charging, docked, problem
-  (with error attributes), mopping, vacuuming. Each is only created when the
+  (with error attributes), **stuck** (see [Stuck alerts](#stuck-alerts)),
+  mopping, vacuuming. Each is only created when the
   configured family actually has the underlying datapoint(s) or status value
   it depends on.
 - **Settings** (configuration category; each created only when the family has
@@ -172,6 +173,88 @@ There is one opt-in approximation, off by default, under the integration's
 
   The *Detected obstacles* sensor works either way — this setting only controls
   whether obstacle positions are also used to guess the room.
+
+## Stuck alerts
+
+When the robot gets stuck it says so — on the fault bitmask, as `bob_stuck` —
+but nothing it sends at that moment says *where*. Measured on the reference
+unit: the fault arrived with the status reading `standby` (not an error
+state), no obstacle frame, and no datapoint carrying a position. The only
+positional evidence was the path trail, whose last point was 0.4 s old — and
+the trail only flows while the vendor app's map screen is open (see
+[Room awareness](#room-awareness)).
+
+So the integration alerts on the *transition* into a stuck fault and attaches
+the best location it honestly has:
+
+- **`binary_sensor.<name>_stuck`** (problem class) is on while a fault meaning
+  "cannot move on its own" is active — `bob_stuck`, a wheel fault, a bumper
+  held pressed, a cliff sensor, or the robot reporting itself boxed in. It
+  clears when the fault bit drops or the robot turns up on the dock. Its
+  attributes are the event: the fault, all active faults, the status, the
+  rooms the job was told to clean (when a room selection is known for this
+  job), the last known position with its source, exactness and age, the taught
+  zone that position falls in, the nearest reported obstacle, and a `message`.
+- **`sensor.<name>_last_stuck`** (timestamp, diagnostic) keeps the most recent
+  event after the robot is freed.
+- A **persistent notification** titled "bObsweep is stuck" is created on the
+  transition and dismissed when it clears.
+- Events **`bobsweep_stuck`** and **`bobsweep_stuck_cleared`** fire on the bus
+  with the same payload plus `device_id` and `entry_id`.
+
+The message reads, for example, `Stuck (bob_stuck) while cleaning Studio and
+Pantry; in Studio; last known position (1922, 1233), 0.4 s before the fault
+(exact); nearest obstacle: shoes, 103 cells away`. With the app closed it
+reads `Stuck (bob_stuck); position unknown (no map session was open)` — the
+truthful answer rather than a stale guess. A fix older than ten minutes is
+not reported as the location at all; the message says how old it was.
+
+A mobile notification from the event:
+
+```yaml
+automation:
+  - alias: "Vacuum stuck"
+    triggers:
+      - trigger: event
+        event_type: bobsweep_stuck
+    actions:
+      - action: notify.mobile_app_your_phone
+        data:
+          title: "bObsweep is stuck"
+          message: "{{ trigger.event.data.message }}"
+```
+
+`trigger.event.data.rooms`, `.position`, `.room` and `.nearest_obstacle` are
+there for anything more elaborate.
+
+## Obstacle insights
+
+*Detected obstacles* (above) is what the robot's camera has found in the
+current job, and it is forgotten between sessions. The integration also keeps
+a **persisted history** of every genuinely-new sighting — class, position,
+the taught zone it fell in, the rooms the job was told to clean, and a job id
+— bounded to the newest 1000 records and stored per config entry. SLAM only,
+since it rides on the same camera reports.
+
+- **`sensor.<name>_last_obstacle`** — the class of the newest sighting
+  (`shoes`, `wire`, …), with `x`, `y`, `room`, `at`, `job` and `job_rooms` as
+  attributes.
+- **`sensor.<name>_obstacle_insights`** — how many distinct obstacles the
+  camera has found in the current job, with the rolled-up views as attributes:
+  `by_class_job`, `by_class_30d`, `hotspots` (the ten places where things keep
+  turning up clean after clean: centroid, count, distinct jobs, dominant class
+  and room), `jobs_recorded`, the `last_job` summary and `total_recorded`.
+- Event **`bobsweep_obstacle_detected`** fires for each new sighting with the
+  record plus `device_id` and `entry_id`.
+- **`bobsweep.clear_obstacle_history`**, targeted at the insights sensor,
+  wipes the history.
+
+Job boundaries are **inferred**, not reported: the robot has no "job started"
+datapoint, so a job begins when the status enters a cleaning value from a
+parked one (charging, `standby`, `sleep`, `idle`, `clean_finish`). A pause, a
+mid-job mop wash, a relocalisation or the return trip do not split a job. A
+room selection is attached to a job only if its acknowledgement arrived for
+that job, so last week's room clean is not pinned on today's whole-house run.
 
 ## Room names
 
@@ -230,6 +313,7 @@ Registered as entity services on the `vacuum` domain (`integration: bobsweep`):
 | `bobsweep.refresh_robot_info` | Re-read the robot's saved maps, schedules, room names and mop-cloth status. Read-only; done once automatically at startup. |
 | `bobsweep.set_room_name` | Give a room id a name of your own, overriding anything derived from the robot's schedules. See [Room names](#room-names). |
 | `bobsweep.clear_room_name` | Forget a name you set, so the robot-derived one shows again. |
+| `bobsweep.clear_obstacle_history` | Forget every recorded obstacle sighting (a `sensor` entity service, targeted at the obstacle-insights sensor). See [Obstacle insights](#obstacle-insights). |
 | `bobsweep.set_mode` | Write a raw Tuya work-mode value directly (zone clean, follow-wall, select-room, quick-map, vacuum-only, etc.) — reaches modes the standard vacuum start/pause/stop controls don't expose. |
 | `bobsweep.empty_dustbin` | Trigger the auto-empty dock. |
 | `bobsweep.set_dp` | Advanced/debug: write an arbitrary raw Tuya datapoint by id. Intended for development and troubleshooting, not routine use. |
