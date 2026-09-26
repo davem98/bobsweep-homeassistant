@@ -8,6 +8,29 @@ an **UltraVision Pet Combo** (`slam` family). The `vision` and `random`
 families are derived from the vendor app's own datapoint tables and remain
 **unvalidated on hardware**; reports from owners of those models are welcome.
 
+## [Unreleased]
+
+### Added
+- **Room-targeted cleaning.** `bobsweep.clean_rooms` starts a clean of one or
+  more of the robot's rooms by name or id, sending the vendor app's own
+  room-clean command — one frame on the command channel, confirmed on
+  hardware. On Home Assistant 2026.3+ the same rooms are exposed as vacuum
+  segments, so `vacuum.clean_area` and the "clean the kitchen" voice intent
+  work once segments are mapped to areas in the vacuum entity's settings.
+
+### Changed
+- Vacuum segments are now the robot's own rooms. They were previously the
+  zones taught through this integration, which could be listed but never
+  cleaned because no zone-clean command had been verified.
+
+### Fixed
+- **The room-selection payload was misread.** Its layout is
+  `[sweep count, room count, room ids…]`, settled against the app's code and
+  a two-room job on hardware; the decoder had treated the leading byte as the
+  room count, so the one-room sample looked like "one room, one pass" and any
+  multi-room acknowledgement read as unknown. The `passes` attribute of the
+  Selected rooms sensor is gone; `sweeps` replaces it.
+
 ## [0.4.1] — 2026-09-13
 
 ### Fixed

@@ -105,9 +105,8 @@ rather than showing up permanently unknown.
   **Selected rooms** (SLAM only, diagnostic) records the room ids the robot
   acknowledged when a room-targeted clean was started from the app. The robot
   emits this once per job and never reports it on a poll, which is why the
-  coordinator listens. The payload layout is not fully pinned down yet; the
-  raw bytes and the decoder's guess at the layout are on the attributes. Where
-  a room's name is known it is shown alongside the id — see
+  coordinator listens. It fires for cleans started from this integration too.
+  Where a room's name is known it is shown alongside the id — see
   [Room names](#room-names).
 
   **Saved maps**, **Schedules** and **Mop cloth dirt** (SLAM only, diagnostic)
@@ -192,12 +191,42 @@ integration, survive restarts, and win over the derived ones. The result
 appears as a `room_names` attribute on the Schedules and Selected rooms
 sensors.
 
+## Room-targeted cleaning — "clean the kitchen"
+
+The robot's room-clean command is one small frame on its command channel,
+carrying nothing but the robot's own room ids. The integration sends exactly
+the frame the vendor app sends (read out of the app's code and then confirmed
+on hardware: the robot acknowledges the same room list back and starts a
+`part_clean` job), so cleaning by room works fully locally.
+
+Two ways in:
+
+- **`bobsweep.clean_rooms`** — rooms by name and/or id, in the order you want
+  them done: `rooms: "Studio, Pantry"` or `rooms: [3, 2]`. Names are the
+  ones the robot's schedules imply plus anything you set with
+  `bobsweep.set_room_name`; an id the robot has never mentioned is rejected
+  before anything is sent.
+- **`vacuum.clean_area` and voice**, on Home Assistant 2026.3 or newer. Every
+  known room is exposed as a vacuum *segment*. Open the vacuum entity's
+  settings, map each segment onto a Home Assistant area once, and from then on
+  `vacuum.clean_area` with an area — and "clean the kitchen" through Assist
+  (the built-in `HassVacuumCleanArea` intent) — sends the right room ids.
+  Aliases on the area ("mudroom", "back hall") work the way they do for any
+  area. The vacuum entity has to be exposed to Assist like any other.
+
+A room the robot has not revealed yet (no schedule targets it, no clean has
+been acked for it, nobody has named it) is invisible to both routes until you
+name it: `bobsweep.set_room_name` with its id is the deliberate way to add
+one. Stop and return-to-base work during a room clean exactly as they do for
+a full clean.
+
 ## Services
 
 Registered as entity services on the `vacuum` domain (`integration: bobsweep`):
 
 | Service | Purpose |
 |---|---|
+| `bobsweep.clean_rooms` | Start a room-targeted clean of the given rooms (names and/or ids, in order). See [Room-targeted cleaning](#room-targeted-cleaning--clean-the-kitchen). |
 | `bobsweep.refresh_robot_info` | Re-read the robot's saved maps, schedules, room names and mop-cloth status. Read-only; done once automatically at startup. |
 | `bobsweep.set_room_name` | Give a room id a name of your own, overriding anything derived from the robot's schedules. See [Room names](#room-names). |
 | `bobsweep.clear_room_name` | Forget a name you set, so the robot-derived one shows again. |

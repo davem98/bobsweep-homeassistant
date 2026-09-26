@@ -51,7 +51,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import Any, Sequence
 
 import tinytuya
 from homeassistant.config_entries import ConfigEntry
@@ -76,10 +76,15 @@ from .position import PathTrailTracker, PositionSource, create_position_source
 from .room_names import RoomNameStore
 from .rooms import RoomTracker
 from .transport import (
+    CMD_CLEAN_SELECT_ROOMS,
     GETTER_FRAMES,
+    HEADER_AA,
+    ROOM_CLEAN_SWEEP_COUNT,
     AiObjectTracker,
     RobotInfoTracker,
     RoomSelectionTracker,
+    decode_wire_value,
+    encode_room_clean_frame,
 )
 from .zones import ZoneStore
 
@@ -790,6 +795,69 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.debug(
                         "bObsweep: getter %s failed on DP %s: %s", name, dp, err
                     )
+
+    # --- room-targeted cleaning ----------------------------------------------
+
+    def known_rooms(self) -> dict[int, str]:
+        """Every room id the robot has revealed, each with its best name.
+
+        Ids come from three places, none of which is a room table (the robot
+        has none on the LAN): the room lists inside its stored schedules, the
+        last room-clean ack, and any id the user has named by hand. A room the
+        robot has never mentioned through any of those is invisible here until
+        it is -- naming it with `bobsweep.set_room_name` is the way to add it.
+        Unnamed ids show as "Room <id>", which is exactly how the vendor app
+        labels them.
+        """
+        ids: set[int] = set()
+        if self.robot_info is not None and self.robot_info.schedules:
+            for schedule in self.robot_info.schedules:
+                ids.update(schedule.room_ids)
+        if self.room_selection is not None and self.room_selection.room_ids:
+            ids.update(self.room_selection.room_ids)
+        names = self.room_names()
+        ids.update(names)
+        return {room_id: names.get(room_id, f"Room {room_id}") for room_id in sorted(ids)}
+
+    async def async_clean_rooms(self, room_ids: Sequence[int]) -> None:
+        """Start a room-targeted clean of `room_ids`, in that order.
+
+        One DP 105 write of the vendor app's own `eCleanSelectRooms` frame and
+        nothing else: the app does not touch the work-mode or enable datapoints
+        for a room clean (proven from its bundle), and the robot itself moves
+        to `part` / `part_clean` and acks on cmd 0x22. Verified on hardware
+        2026-09-25 with a two-room job.
+
+        **Safety.** This is the only place in the integration that writes a
+        *command* to DP 105, and `encode_room_clean_frame` is the only function
+        allowed to build it. The re-decode below is the invariant, in the same
+        spirit as the allow-list check in `async_refresh_robot_info`: the value
+        about to go out must parse back as exactly cmd 0x12 carrying exactly
+        these rooms, so no future edit can route a different frame through
+        here. A room clean is the one non-destructive command on this channel
+        -- the same datapoint carries map delete and room merge, which is why
+        nothing more general than this exists.
+        """
+        dp = self.spec.dp_transportation
+        if dp is None:
+            raise ValueError(
+                f"the {self.spec.key} family has no transportation datapoint"
+            )
+        ids = [int(room_id) for room_id in room_ids]
+        frame = encode_room_clean_frame(ids)  # validates ids, raises ValueError
+
+        decoded = decode_wire_value(frame)
+        if (
+            decoded is None
+            or decoded.frame.header != HEADER_AA
+            or decoded.frame.cmd != CMD_CLEAN_SELECT_ROOMS
+            or list(decoded.frame.data) != [ROOM_CLEAN_SWEEP_COUNT, len(ids), *ids]
+        ):  # pragma: no cover - the invariant
+            raise ValueError("refusing to write DP 105: not a room-clean frame")
+
+        _LOGGER.debug("bObsweep: room clean of %s (DP %s = %s)", ids, dp, frame)
+        await self._async_command("set", dp, frame)
+        await self.async_request_refresh()
 
     def room_names(self) -> dict[int, str]:
         """Effective room-id -> name map: robot-derived, user overrides winning.

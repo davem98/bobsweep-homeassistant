@@ -225,6 +225,36 @@ import_zones:
       selector:
         boolean:
 
+# --- room-targeted cleaning --------------------------------------------------
+# clean_rooms sends the vendor app's own room-clean command (one DP 105 frame)
+# for the robot's own room ids. On Home Assistant 2026.3+ the same rooms are
+# also exposed as vacuum segments, so `vacuum.clean_area` and the "clean the
+# kitchen" voice intent work once segments are mapped to areas in the vacuum
+# entity's settings.
+
+clean_rooms:
+  name: Clean rooms
+  description: >-
+    Start a room-targeted clean of one or more of the robot's rooms, in the
+    order given. Rooms are matched by name (case-insensitive) against the
+    names the robot's schedules imply plus any set with Set room name, or by
+    the robot's own room id. Any room the robot has not revealed is rejected
+    before anything is sent.
+  target:
+    entity:
+      integration: bobsweep
+      domain: vacuum
+  fields:
+    rooms:
+      name: Rooms
+      description: >-
+        Room names and/or ids, as a list or comma-separated text, e.g.
+        "Studio, Pantry" or [3, 2].
+      required: true
+      example: "Studio, Pantry"
+      selector:
+        object:
+
 # --- robot info / room names -------------------------------------------------
 # refresh_robot_info sends only the vendor app's own named read-only getters on
 # DP 105. Nothing else may ever be written to that datapoint: the same channel

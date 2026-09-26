@@ -326,9 +326,11 @@ class BobsweepSelectedRoomsSensor(CoordinatorEntity[BobsweepCoordinator], Sensor
       was seen had a payload layout this integration could not read. The
       ``layout`` and ``raw`` attributes tell those two apart.
 
-    The ids are the robot's own room numbers from its map partition, not the
-    zone names taught through this integration; the two are separate concepts
-    and nothing here tries to reconcile them.
+    The payload is `[sweep_count, room_count, room_id...]` (settled 2026-09-25
+    against the app's native code and a two-room job on hardware). The ids are
+    the robot's own room numbers from its map partition -- the same ids
+    `vacuum.clean_area` / `bobsweep.clean_rooms` send -- not the zone names
+    taught through this integration.
 
     SLAM only -- the other two families have no transportation datapoint.
     """

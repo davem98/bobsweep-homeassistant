@@ -35,7 +35,6 @@ from .coordinator import BobsweepCoordinator
 from .faults import decode_faults
 from .room_names import MAX_ROOM_NAME_LENGTH, RoomNameError
 from .zone_services import async_register_zone_services
-from .zones import ZoneError, resolve_segment_boxes, segment_specs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,8 +51,9 @@ _LOGGER = logging.getLogger(__name__)
 # feature is simply absent on an older core -- no hard import, no version
 # string comparison (which would be wrong the moment a feature is backported),
 # and nothing else in the integration changes behaviour. On an HA that has it,
-# taught zones become segments; on one that does not, everything else works
-# exactly as before.
+# the robot's own rooms become segments; on one that does not, the
+# `bobsweep.clean_rooms` service is the same capability without the voice
+# intent.
 try:  # HA >= 2026.3
     from homeassistant.components.vacuum import Segment  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - depends on the running HA version
@@ -70,6 +70,25 @@ SERVICE_SET_DP = "set_dp"
 SERVICE_REFRESH_ROBOT_INFO = "refresh_robot_info"
 SERVICE_SET_ROOM_NAME = "set_room_name"
 SERVICE_CLEAR_ROOM_NAME = "clear_room_name"
+SERVICE_CLEAN_ROOMS = "clean_rooms"
+
+
+def coerce_room_list(value: Any) -> list[str]:
+    """Accept a list, or a comma-separated string, of room names or ids.
+
+    A YAML call gives a list; the UI's text selector and a voice assistant's
+    slot both give one string, and "kitchen, hallway" is the natural way to
+    type two rooms into it. Elements are kept as text -- resolution against
+    the robot's known rooms happens on the entity, where the names live.
+    """
+    if isinstance(value, (list, tuple)):
+        items = [str(item) for item in value]
+    else:
+        items = str(value).split(",")
+    cleaned = [item.strip() for item in items if item.strip()]
+    if not cleaned:
+        raise vol.Invalid("at least one room is required")
+    return cleaned
 
 
 def coerce_dp_value(value: Any) -> Any:
@@ -137,12 +156,11 @@ class BobsweepVacuum(CoordinatorEntity[BobsweepCoordinator], StateVacuumEntity):
             features |= VacuumEntityFeature.LOCATE
         if self._spec.mode_spot is not None:
             features |= VacuumEntityFeature.CLEAN_SPOT
-        if SEGMENTS_SUPPORTED:
-            # Advertised on capability, not on whether any zone has been taught
-            # yet: `supported_features` is fixed at entity construction, and a
-            # zone taught five minutes from now must not require a reload to
-            # become a segment. With no zones, `async_get_segments()` simply
-            # returns an empty list.
+        if SEGMENTS_SUPPORTED and self._spec.dp_transportation is not None:
+            # Advertised on capability, not on whether any room is known yet:
+            # `supported_features` is fixed at entity construction, and the
+            # room list arrives ~10 s after startup with the schedule reply.
+            # Until then `async_get_segments()` simply returns an empty list.
             features |= VacuumEntityFeature.CLEAN_AREA
         self._attr_supported_features = features
 
@@ -366,71 +384,87 @@ class BobsweepVacuum(CoordinatorEntity[BobsweepCoordinator], StateVacuumEntity):
 
     # --- segments (HA 2026.3+) ----------------------------------------------
     async def async_get_segments(self) -> list[Any]:
-        """Expose every taught zone as a cleanable segment.
+        """Expose every room the robot has revealed as a cleanable segment.
 
-        Segment id is the zone's stable uuid — the user maps segments onto HA
-        areas in the entity registry and that mapping is keyed by id, so it has
-        to survive a rename. `group` is the map id, which is how a multi-floor
-        home is namespaced; it is None until something is verified to report one.
+        Segment id is the robot's own room id as text -- the user maps segments
+        onto HA areas in the entity registry and that mapping is keyed by id,
+        so it survives a room being renamed. `group` would be the map id in a
+        multi-floor home; it is None because nothing verified reports which
+        map is loaded.
         """
         if not SEGMENTS_SUPPORTED:
             return []
         return [
-            Segment(id=spec["id"], name=spec["name"], group=spec["group"])
-            for spec in segment_specs(self.coordinator.rooms.zones)
+            Segment(id=str(room_id), name=name, group=None)
+            for room_id, name in self.coordinator.known_rooms().items()
         ]
 
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
-        """Clean the named segments. **Not implemented — no verified send path.**
+        """Clean the given rooms -- what `vacuum.clean_area` and the
+        `HassVacuumCleanArea` voice intent ("clean the kitchen") end up calling.
 
-        The resolution half is real and runs first, so a bad segment id fails on
-        the id rather than on the transport, and so this code path is exercised
-        the moment sending becomes possible: ids -> zones -> bounding boxes in
-        raw map-cell units (rectangles, because the robot's zone command takes
-        rectangles, not polygons).
-
-        The send half is deliberately absent. The intended mechanism is a DP 105
-        (`COMMAND_TRANSPORTATION`) `eDesignated:16` write carrying the corner
-        pairs as signed int16 in the 0xAA frame format
-        (`[AA][len][cmd][data...][chk]`, base64 on the wire), followed by a
-        work-mode write of `zone`. Frame format and checksum are confirmed
-        against ten captured frames, but that is confirmation of *decoding*
-        frames the robot sent — no write to DP 105 has ever been probed. Sending
-        a speculative frame to a robot that is mapping a real house is not a
-        thing to guess at: a malformed transportation payload is the same channel
-        that carries map save/delete and room split/merge commands.
+        Segment ids are room ids as text. Every id is checked against the rooms
+        the robot has revealed before anything is sent, so a stale area mapping
+        fails on the id rather than sending the robot to a room that no longer
+        exists on its map.
         """
         if not SEGMENTS_SUPPORTED:
             raise HomeAssistantError(
                 "This Home Assistant version has no vacuum segment support."
             )
+        await self._async_clean_rooms(self._resolve_rooms(segment_ids))
 
-        zone_set = self.coordinator.rooms.zones
-        try:
-            resolved = resolve_segment_boxes(zone_set, segment_ids)
-        except ZoneError as err:
-            known = ", ".join(sorted(zone_set.names)) or "(no zones taught)"
+    def _resolve_rooms(self, wanted: list[Any]) -> list[int]:
+        """Turn room names and/or ids into the robot's room ids, in call order.
+
+        Names match case-insensitively against the effective room names; a bare
+        integer, or "room 3", is an id. An id the robot has never revealed is
+        rejected too -- it might exist, but sending the robot to a guessed
+        room is not this integration's call. Naming the room first with
+        `bobsweep.set_room_name` is the deliberate way to add one.
+        """
+        known = self.coordinator.known_rooms()
+        by_name = {name.casefold(): room_id for room_id, name in known.items()}
+        resolved: list[int] = []
+        unknown: list[str] = []
+        for raw in wanted:
+            text = str(raw).strip()
+            key = text.casefold()
+            room_id: int | None = None
+            if key in by_name:
+                room_id = by_name[key]
+            else:
+                digits = key[5:] if key.startswith("room ") else key
+                if digits.lstrip("-").isdigit() and int(digits) in known:
+                    room_id = int(digits)
+            if room_id is None:
+                unknown.append(text)
+            elif room_id not in resolved:
+                resolved.append(room_id)
+        if unknown:
+            options = ", ".join(f"{name} ({room_id})" for room_id, name in known.items())
             raise ServiceValidationError(
-                f"{err}. Known bObsweep zones: {known}"
-            ) from err
+                f"Unknown bObsweep room(s): {', '.join(unknown)}. Known rooms: "
+                f"{options or '(none yet -- name one with bobsweep.set_room_name)'}"
+            )
+        return resolved
 
-        names = ", ".join(zone.name for zone, _ in resolved)
-        boxes = [
-            [int(round(v)) for v in box] for _zone, box in resolved
-        ]
-        _LOGGER.debug("bObsweep segment clean resolved to %s: %s", names, boxes)
-
-        raise HomeAssistantError(
-            f"bObsweep cannot yet start a segment clean ({names}). The zones "
-            f"resolved correctly to map-cell rectangles {boxes}, but writing "
-            "them to the robot needs DP 105 (COMMAND_TRANSPORTATION, "
-            "eDesignated:16) plus the 'zone' work mode, and that write has "
-            "never been probed on real hardware. Sending a speculative frame "
-            "on the same datapoint that carries map delete and room merge is "
-            "not safe, so nothing was sent."
-        )
+    async def _async_clean_rooms(self, room_ids: list[int]) -> None:
+        """Send the room clean, translating validation failures for the UI."""
+        if self._spec.dp_transportation is None:
+            raise ServiceValidationError(
+                f"The {self._spec.key} bObsweep family has no room-clean command"
+            )
+        try:
+            await self.coordinator.async_clean_rooms(room_ids)
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
 
     # --- custom entity services ---------------------------------------------
+    async def async_clean_rooms_service(self, rooms: list[str]) -> None:
+        """Custom service: clean the named rooms (names or ids, any mix)."""
+        await self._async_clean_rooms(self._resolve_rooms(rooms))
+
     async def async_set_mode(self, mode: str) -> None:
         """Custom service: write a raw work-mode value to the work-mode DP."""
         if mode not in self._spec.work_mode.values():
@@ -549,6 +583,11 @@ async def async_setup_entry(
             ),
         },
         "async_set_room_name_service",
+    )
+    platform.async_register_entity_service(
+        SERVICE_CLEAN_ROOMS,
+        {vol.Required("rooms"): coerce_room_list},
+        "async_clean_rooms_service",
     )
     platform.async_register_entity_service(
         SERVICE_CLEAR_ROOM_NAME,

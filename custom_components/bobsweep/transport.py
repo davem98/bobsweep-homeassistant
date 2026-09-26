@@ -68,18 +68,25 @@ angle and three empty area reports, and no 0x22 either time.
 
 The consequence for this integration: a room selection can only be observed by
 *listening* when the command goes past, and then remembered. Polling will never
-surface it. The payload is room **ids**, not geometry (`01 01 01` for a
-one-room job), and its exact layout is not yet pinned down.
+surface it. The payload is room **ids**, not geometry, laid out as
+`[sweep_count, room_count, room_id...]` — see `decode_room_selection` for how
+that was settled.
 
 Note also that a room-targeted clean reports work mode `part` / status
 `part_clean` on this firmware — `selectroom` is in the app's enum table but is
 never emitted, the same way DP 119 is tabled but absent.
 
-Nothing here sends anything. `encode_frame` / `encode_frame_b64` exist as
-tested pure functions for a future writer; wiring a write path to DP 105 is a
-deliberate, separate decision, because *every* dangerous map operation on this
-robot is a write to this one datapoint and a datapoint-level denylist cannot
-protect it.
+The one command this module can build
+-------------------------------------
+
+`encode_room_clean_frame` is the **only** frame builder here that produces a
+command rather than a read-only getter. It reproduces, byte for byte, what the
+vendor app's `sendRoomCleaningCommand` sends — nothing else on DP 105 is ever
+written by this integration, and the coordinator's write path checks that the
+frame it is handed came from exactly this function (see
+`coordinator.async_clean_rooms`). That matters because *every* dangerous map
+operation on this robot is a write to this one datapoint and a datapoint-level
+denylist cannot protect it.
 """
 
 from __future__ import annotations
@@ -588,39 +595,79 @@ class AiObjectTracker:
 # --- eCleanSelectRooms / …ToApp (cmd 0x12 / 0x22) ----------------------------
 
 
-def decode_room_selection(data: bytes) -> tuple[str, list[int] | None, list[int] | None]:
-    """Decode a room-selection payload into `(layout, room_ids, passes)`.
+#: The leading byte of every room-selection payload. The vendor app's native
+#: `TargetCleaning.saveRoomsForCleaningToRobot` prepends a static
+#: `cSweepingCount = 1` that nothing in the app ever changes.
+ROOM_CLEAN_SWEEP_COUNT = 1
 
-    **The layout is not pinned down.** The only real sample is `01 01 01` — one
-    room — and one byte of it is the count, which leaves the remaining two bytes
-    genuinely ambiguous. Two readings fit every frame seen so far:
+#: The largest room id the frame can carry. 255 is reserved: the app's unused
+#: "room clean edit" path sends `[1, 255]`, so it reads as a sentinel.
+MAX_ROOM_ID = 254
 
-    * `[count, id, id, …]` — a plain list of room ids;
-    * `[count, (id, passes), …]` — each room with its pass count, which is what
-      the vendor app's room-clean UI collects.
+#: One byte each for sweep count and room count, and one per room, all inside
+#: a single-byte length field that also counts the command byte.
+MAX_ROOMS_PER_CLEAN = 0xFF - 3
 
-    So this measures the payload instead of assuming: `1 + count` bytes means
-    ids, `1 + 2*count` means id/pass pairs, and anything else is reported as
-    `"unknown"` with the raw bytes preserved rather than force-fitted. With
-    `count == 1` both formulas cannot both match — `1 + 1 = 2 != 3 = 1 + 2*1` —
-    and the real frame is three bytes, so `01 01 01` reads as one room with one
-    pass. That is a *decode*, not a confirmation; a two-room job will settle it
-    in one frame, which is why the layout is surfaced as an attribute.
 
-    Returns `("empty", [], [])` for a well-formed zero-room selection, which is
-    a different answer from "we could not read it".
+def decode_room_selection(data: bytes) -> tuple[str, list[int] | None, int | None]:
+    """Decode a room-selection payload into `(layout, room_ids, sweep_count)`.
+
+    Layout: `[sweep_count, room_count, room_id...]`. Read out of the vendor
+    app's native code (`TargetCleaning.saveRoomsForCleaningToRobot` builds
+    `[cSweepingCount=1, size, ids...]`) and then confirmed on hardware
+    2026-09-25: a two-room command for rooms 3 and 2 was acked `01 02 03 02`.
+    That also resolves the older one-room sample `01 01 01`, which for a while
+    looked like "count, id, passes": it is sweeps 1, count 1, room 1.
+
+    There are no per-room pass counts and no map id in this frame.
+
+    `"unknown"` with the raw bytes preserved is the answer for anything that
+    does not fit, rather than a force-fit. `("empty", [], 1)` is a well-formed
+    zero-room selection -- the app refuses to send one, but the robot might ack
+    one -- and is a different answer from "we could not read it".
     """
-    if not data:
+    if len(data) < 2:
         return ("unknown", None, None)
-    count = data[0]
-    body = data[1:]
-    if count == 0 and not body:
-        return ("empty", [], None)
-    if len(body) == count:
-        return ("ids", list(body), None)
-    if len(body) == 2 * count:
-        return ("id_passes", list(body[0::2]), list(body[1::2]))
-    return ("unknown", None, None)
+    sweeps, count = data[0], data[1]
+    body = data[2:]
+    if len(body) != count:
+        return ("unknown", None, None)
+    if count == 0:
+        return ("empty", [], sweeps)
+    return ("ids", list(body), sweeps)
+
+
+def encode_room_clean_frame(room_ids: Sequence[int]) -> str:
+    """Build the app's own room-clean command, base64 for a tinytuya write.
+
+    Byte-for-byte what `sendRoomCleaningCommand` in the vendor app emits: an
+    0xAA frame, cmd 0x12 `eCleanSelectRooms`, data
+    `[ROOM_CLEAN_SWEEP_COUNT, len(rooms), *rooms]`. A room clean is this one
+    write and nothing else -- the app does not touch the work-mode or enable
+    datapoints for it (both proven from its bundle, 2026-09-25), and the robot
+    itself moves to `part` / `part_clean` and acks with the same payload on
+    cmd 0x22.
+
+    Validation is strict because the alternative is a guessed frame on the
+    datapoint that also carries map delete and room merge: ids must be ints in
+    `0..MAX_ROOM_ID`, at least one, no duplicates (the app de-duplicates
+    before sending), and few enough to fit the one-byte length field.
+    """
+    ids: list[int] = []
+    for raw in room_ids:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError(f"room id {raw!r} is not an integer")
+        if not 0 <= raw <= MAX_ROOM_ID:
+            raise ValueError(f"room id {raw} is outside 0..{MAX_ROOM_ID}")
+        if raw in ids:
+            raise ValueError(f"room id {raw} is listed twice")
+        ids.append(raw)
+    if not ids:
+        raise ValueError("a room clean needs at least one room id")
+    if len(ids) > MAX_ROOMS_PER_CLEAN:
+        raise ValueError(f"at most {MAX_ROOMS_PER_CLEAN} rooms fit in one command")
+    data = bytes([ROOM_CLEAN_SWEEP_COUNT, len(ids), *ids])
+    return encode_frame_b64(CMD_CLEAN_SELECT_ROOMS, data, header=HEADER_AA)
 
 
 @dataclass(frozen=True)
@@ -631,7 +678,7 @@ class RoomSelection:
     cmd: int
     layout: str
     room_ids: list[int] | None
-    passes: list[int] | None
+    sweeps: int | None
     raw_hex: str
     #: `time.monotonic()` when it was seen.
     at: float
@@ -642,7 +689,7 @@ class RoomSelection:
             "cmd": f"0x{self.cmd:02X}",
             "layout": self.layout,
             "room_ids": self.room_ids,
-            "passes": self.passes,
+            "sweeps": self.sweeps,
             "raw": self.raw_hex,
         }
 
@@ -658,23 +705,23 @@ class RoomSelectionTracker:
     the frame as it goes past and hold onto it.
 
     The 0x12 command is recorded separately as `last_command`. It is the app
-    talking, not the robot answering, so it is evidence of intent rather than of
-    state; the two are kept apart on purpose, and only the ack updates the
-    selection this tracker reports.
+    (or this integration — the robot broadcasts every client's writes) talking,
+    not the robot answering, so it is evidence of intent rather than of state;
+    the two are kept apart on purpose, and only the ack updates the selection
+    this tracker reports.
 
-    Nothing here writes. See the module docstring on why a DP 105 write path is
-    a separate, deliberate decision.
+    Nothing here writes. `coordinator.async_clean_rooms` is the write path.
     """
 
     def __init__(self) -> None:
         """Start with nothing observed."""
         #: The rooms in the last ack, or None if the layout could not be read.
         self.room_ids: list[int] | None = None
-        #: Per-room pass counts, when the payload turned out to carry them.
-        self.passes: list[int] | None = None
+        #: The sweep count the last ack carried (the app always sends 1).
+        self.sweeps: int | None = None
         #: The last ack's payload bytes, always kept even when undecodable.
         self.raw_hex: str | None = None
-        #: "ids" | "id_passes" | "empty" | "unknown" — how the payload read.
+        #: "ids" | "empty" | "unknown" — how the payload read.
         self.layout: str = "unknown"
         #: `time.monotonic()` of the last ack.
         self.observed_at: float | None = None
@@ -705,12 +752,12 @@ class RoomSelectionTracker:
         if frame.cmd not in (CMD_CLEAN_SELECT_ROOMS, CMD_CLEAN_SELECT_ROOMS_TO_APP):
             return None
 
-        layout, room_ids, passes = decode_room_selection(frame.data)
+        layout, room_ids, sweeps = decode_room_selection(frame.data)
         observation = RoomSelection(
             cmd=frame.cmd,
             layout=layout,
             room_ids=room_ids,
-            passes=passes,
+            sweeps=sweeps,
             raw_hex=frame.data.hex(),
             at=time.monotonic() if now is None else now,
         )
@@ -722,7 +769,7 @@ class RoomSelectionTracker:
 
         self.acks_seen += 1
         self.room_ids = room_ids
-        self.passes = passes
+        self.sweeps = sweeps
         self.raw_hex = observation.raw_hex
         self.layout = layout
         self.observed_at = observation.at
@@ -740,7 +787,7 @@ class RoomSelectionTracker:
         age = self.age
         return {
             "room_ids": self.room_ids,
-            "passes": self.passes,
+            "sweeps": self.sweeps,
             "layout": self.layout,
             "raw": self.raw_hex,
             "age": None if age is None else round(age, 1),
@@ -754,7 +801,7 @@ class RoomSelectionTracker:
     def reset(self) -> None:
         """Forget everything — for a new job, or for tests."""
         self.room_ids = None
-        self.passes = None
+        self.sweeps = None
         self.raw_hex = None
         self.layout = "unknown"
         self.observed_at = None

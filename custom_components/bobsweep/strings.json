@@ -257,6 +257,16 @@
         }
       }
     },
+    "clean_rooms": {
+      "name": "Clean rooms",
+      "description": "Start a room-targeted clean of one or more of the robot's rooms, in the order given. Rooms are matched by name (case-insensitive) or by the robot's own room id; a room the robot has not revealed is rejected before anything is sent.",
+      "fields": {
+        "rooms": {
+          "name": "Rooms",
+          "description": "Room names and/or ids, as a list or comma-separated text."
+        }
+      }
+    },
     "clear_room_name": {
       "name": "Clear room name",
       "description": "Remove the name you gave a room id, so any name implied by the robot's own schedules shows again. Does nothing if that room was never named by hand.",
