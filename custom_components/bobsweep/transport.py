@@ -503,6 +503,11 @@ class AiObjectTracker:
         #: The last genuinely-new object, and whether it has been consumed.
         self.last_sighting: AiSighting | None = None
         self._pending: AiSighting | None = None
+        #: Running count of genuinely-new sightings. A non-destructive way for
+        #: a second consumer (`insights.ObstacleInsightsRecorder`) to notice a
+        #: new `last_sighting` without taking the one-shot `_pending` hand-off
+        #: that belongs to the position source.
+        self.sightings_seen = 0
 
     def ingest(self, value: Any, *, now: float | None = None) -> AiSighting | None:
         """Feed one raw DP 105 value in. Returns a new sighting, or None.
@@ -544,6 +549,7 @@ class AiObjectTracker:
         self.known.insert(0, head)
         self.last_sighting = sighting
         self._pending = sighting
+        self.sightings_seen += 1
         return sighting
 
     def consume_new_sighting(self) -> AiSighting | None:
@@ -583,6 +589,7 @@ class AiObjectTracker:
         self.echoes_ignored = 0
         self.last_sighting = None
         self._pending = None
+        self.sightings_seen = 0
 
 
 # --- eCleanSelectRooms / …ToApp (cmd 0x12 / 0x22) ----------------------------

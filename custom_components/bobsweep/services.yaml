@@ -296,3 +296,16 @@ clear_room_name:
           min: 0
           max: 255
           mode: box
+
+# --- obstacle insights ---
+clear_obstacle_history:
+  name: Clear obstacle history
+  description: >-
+    Forget every recorded obstacle sighting for this robot -- the per-job
+    tallies, the 30-day counts and the hotspots all start again from nothing.
+    The robot's own current-job obstacle list (the Detected obstacles sensor)
+    is not affected.
+  target:
+    entity:
+      integration: bobsweep
+      domain: sensor

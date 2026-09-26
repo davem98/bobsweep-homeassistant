@@ -22,6 +22,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -30,6 +31,9 @@ from . import BobsweepConfigEntry
 from .const import DEFAULT_NAME, DOMAIN
 from .coordinator import BobsweepCoordinator
 from .faults import FAULT_CHANNELS, decode_faults, fault_state_options
+from .insights import insights_attributes
+
+SERVICE_CLEAR_OBSTACLE_HISTORY = "clear_obstacle_history"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -636,6 +640,190 @@ class BobsweepMopClothSensor(BobsweepRobotInfoSensor):
         return None if info is None else info.mop_cloth_percent
 
 
+class BobsweepLastStuckSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
+    """When the robot last got stuck, with everything known about that moment.
+
+    The state is the timestamp of the most recent transition into a stuck
+    fault (see `stuck.py` and `binary_sensor.<name>_stuck`); it stays put after
+    the robot is freed, which is what "last time" means. The attributes are the
+    event: the fault, the rooms the job was told to clean, the last known
+    position with its provenance and age (or an honest "position unknown"), the
+    nearest reported obstacle, and the `message` sentence. *Unknown* until the
+    robot has been stuck once since Home Assistant started -- the event is not
+    persisted.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the last-stuck sensor."""
+        super().__init__(coordinator)
+        self.entity_description = SensorEntityDescription(
+            key="last_stuck",
+            translation_key="last_stuck",
+            name="Last stuck",
+            device_class=SensorDeviceClass.TIMESTAMP,
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+        self._attr_unique_id = f"{coordinator.device_id}_last_stuck"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def _last(self) -> Any:
+        alerter = getattr(self.coordinator, "stuck", None)
+        return None if alerter is None else alerter.monitor.last
+
+    @property
+    def native_value(self) -> Any:
+        """The last stuck event's timestamp (tz-aware), or None."""
+        event = self._last
+        return None if event is None else event.at
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The last stuck event as a dict, or nothing yet."""
+        event = self._last
+        return {} if event is None else event.as_dict()
+
+
+class BobsweepLastObstacleSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
+    """The most recent genuinely-new obstacle the camera reported.
+
+    State is the vendor's class name (`shoes`, `wire`, ...); attributes are
+    where it was (raw map cells), which taught zone that falls in, when, and
+    the rooms the job was told to clean. Fed by the persisted obstacle history
+    (see `insights.py`), so unlike *Detected obstacles* it survives a restart.
+    SLAM only.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the last-obstacle sensor."""
+        super().__init__(coordinator)
+        self.entity_description = SensorEntityDescription(
+            key="last_obstacle",
+            translation_key="last_obstacle",
+            name="Last obstacle",
+            icon="mdi:shoe-sneaker",
+        )
+        self._attr_unique_id = f"{coordinator.device_id}_last_obstacle"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def _record(self) -> Any:
+        recorder = getattr(self.coordinator, "obstacle_insights", None)
+        return None if recorder is None else recorder.history.last
+
+    @property
+    def native_value(self) -> str | None:
+        """The class of the newest recorded obstacle, or None."""
+        record = self._record
+        return None if record is None else record.class_name
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Position, zone, time, job and job rooms of the newest record."""
+        record = self._record
+        if record is None:
+            return {}
+        return {
+            "x": record.x,
+            "y": record.y,
+            "room": record.room,
+            "at": record.at,
+            "job": record.job,
+            "job_rooms": None if record.job_rooms is None else list(record.job_rooms),
+        }
+
+
+class BobsweepObstacleInsightsSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
+    """What the robot keeps finding, and where: the obstacle history rolled up.
+
+    State is how many distinct obstacles the camera has found in the *current*
+    cleaning job (0 between jobs, or when no job boundary has been seen yet).
+    Attributes carry the derived views from `insights.py`: `by_class_job`,
+    `by_class_30d`, the top `hotspots` (places where things turn up clean after
+    clean, as centroid + count + dominant class + room), `jobs_recorded`, the
+    `last_job` summary and `total_recorded`.
+
+    Job boundaries are inferred from the status datapoint, not reported by the
+    robot -- see the `insights` module docstring for the rule. The history is
+    persisted per config entry and bounded; `bobsweep.clear_obstacle_history`
+    (targeted at this entity) wipes it. SLAM only.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the insights sensor."""
+        super().__init__(coordinator)
+        self.entity_description = SensorEntityDescription(
+            key="obstacle_insights",
+            translation_key="obstacle_insights",
+            name="Obstacle insights",
+            icon="mdi:chart-scatter-plot",
+            state_class=SensorStateClass.MEASUREMENT,
+        )
+        self._attr_unique_id = f"{coordinator.device_id}_obstacle_insights"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def _recorder(self) -> Any:
+        return getattr(self.coordinator, "obstacle_insights", None)
+
+    @property
+    def _job(self) -> str | None:
+        jobs = getattr(self.coordinator, "jobs", None)
+        return None if jobs is None else jobs.job
+
+    @property
+    def native_value(self) -> int | None:
+        """Distinct obstacles recorded in the current job."""
+        recorder = self._recorder
+        if recorder is None:
+            return None
+        job = self._job
+        if job is None:
+            return 0
+        return sum(1 for record in recorder.history.records if record.job == job)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The derived views over the whole history."""
+        recorder = self._recorder
+        if recorder is None:
+            return {}
+        try:
+            return insights_attributes(recorder.history, self._job)
+        except Exception:  # noqa: BLE001 - an attribute must never raise
+            _LOGGER.debug("bObsweep: insights attributes failed", exc_info=True)
+            return {}
+
+    async def async_clear_history(self) -> None:
+        """`bobsweep.clear_obstacle_history`: forget every recorded sighting."""
+        recorder = self._recorder
+        if recorder is None:
+            return
+        await recorder.store.async_clear()
+        self.async_write_ha_state()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: BobsweepConfigEntry,
@@ -730,6 +918,26 @@ async def async_setup_entry(
         _LOGGER.debug(
             "bObsweep current_room sensor will stay unknown: %s",
             coordinator.position_source.unavailable_reason,
+        )
+
+    # Stuck history: same gate as the stuck binary sensor (a fault datapoint).
+    if getattr(coordinator, "stuck", None) is not None:
+        entities.append(BobsweepLastStuckSensor(coordinator))
+
+    # Obstacle insights ride on the obstacle tracker (SLAM). The clear service
+    # is registered on this platform so it targets the insights entity.
+    if getattr(coordinator, "obstacle_insights", None) is not None:
+        entities.append(BobsweepLastObstacleSensor(coordinator))
+        entities.append(BobsweepObstacleInsightsSensor(coordinator))
+        platform = entity_platform.async_get_current_platform()
+        platform.async_register_entity_service(
+            SERVICE_CLEAR_OBSTACLE_HISTORY, {}, "async_clear_history"
+        )
+    else:
+        _LOGGER.debug(
+            "Skipping bObsweep obstacle-insight sensors: family %s has no "
+            "obstacle tracker",
+            spec.key,
         )
 
     async_add_entities(entities)

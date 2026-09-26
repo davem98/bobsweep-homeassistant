@@ -8,6 +8,33 @@ an **UltraVision Pet Combo** (`slam` family). The `vision` and `random`
 families are derived from the vendor app's own datapoint tables and remain
 **unvalidated on hardware**; reports from owners of those models are welcome.
 
+## [Unreleased]
+
+### Added
+- **Stuck alerts with a best-effort location.** A new
+  `binary_sensor.<name>_stuck` turns on when a fault meaning "cannot move on
+  its own" appears (`bob_stuck`, wheel, bumper, cliff-sensor and boxed-in
+  faults), with the rooms the job was told to clean, the last known position
+  (source, exactness and age), the taught zone it falls in, the nearest
+  reported obstacle and a human `message` as attributes. A persistent
+  notification is raised and dismissed with it, `sensor.<name>_last_stuck`
+  keeps the most recent event, and `bobsweep_stuck` /
+  `bobsweep_stuck_cleared` fire on the event bus. The robot sends no position
+  with the fault, so the location comes from the path trail and is reported
+  as *unknown* when no map session was open.
+- **Obstacle insights.** Every genuinely-new camera sighting is now recorded
+  — class, position, zone, job rooms, job id — in a bounded, persisted
+  history (`bobsweep_obstacles.<entry_id>`). `sensor.<name>_last_obstacle`
+  shows the newest; `sensor.<name>_obstacle_insights` counts this job's
+  obstacles and carries per-class counts (this job and the last 30 days),
+  hotspots where things keep turning up across jobs, and per-job summaries.
+  `bobsweep_obstacle_detected` fires per sighting;
+  `bobsweep.clear_obstacle_history` wipes the history. SLAM only.
+- Cleaning-job boundaries are inferred from the status datapoint (parked ->
+  cleaning opens a job; pauses, mop washes and relocalisation do not split
+  one), and a room selection is attached to a job only when its
+  acknowledgement arrived for that job.
+
 ## [0.4.1] — 2026-09-13
 
 ### Fixed

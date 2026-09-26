@@ -70,11 +70,13 @@ async def async_remove_entry(hass: HomeAssistant, entry: BobsweepConfigEntry) ->
     Both live in `.storage/` under keys derived from the entry id, so a deleted
     entry would otherwise leave two orphaned files behind for good.
     """
+    from .insights import ObstacleHistoryStore  # noqa: PLC0415
     from .room_names import RoomNameStore  # noqa: PLC0415
     from .zones import ZoneStore  # noqa: PLC0415
 
     await ZoneStore(hass, entry.entry_id).async_remove()
     await RoomNameStore(hass, entry.entry_id).async_remove()
+    await ObstacleHistoryStore(hass, entry.entry_id).async_remove()
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: BobsweepConfigEntry) -> None:

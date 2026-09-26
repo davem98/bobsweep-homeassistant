@@ -288,6 +288,65 @@ class BobsweepBinarySensor(CoordinatorEntity[BobsweepCoordinator], BinarySensorE
         return self.entity_description.extra_attrs_fn(self.coordinator.spec, data)
 
 
+class BobsweepStuckBinarySensor(CoordinatorEntity[BobsweepCoordinator], BinarySensorEntity):
+    """Is the robot stuck right now -- and, as best we can tell, where.
+
+    Not a raw datapoint. `stuck.StuckMonitor` (owned by the coordinator) watches
+    the decoded fault list for the *transition* into a fault that means the
+    robot cannot move on its own (`stuck.STUCK_FAULTS`), and freezes everything
+    known at that moment into an event: the fault, the status, the rooms the
+    job was told to clean, and the last known position with its provenance and
+    age. The attributes here are that event -- the active one while stuck, the
+    most recent one afterwards -- including the human `message` the persistent
+    notification uses.
+
+    Location is best-effort and says so. Measured on hardware (2026-09-02) the
+    stuck fault arrived with no position on any datapoint; the only fix was a
+    path-trail point 0.37 s old, and the trail flows only while the vendor app's
+    map screen is open. With the app closed the message reads "position
+    unknown (no map session was open)", which is the truth.
+
+    Created whenever the family has a fault datapoint (the same gate as the
+    `problem` sensor).
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: BobsweepCoordinator) -> None:
+        """Initialize the stuck sensor."""
+        super().__init__(coordinator)
+        self.entity_description = BinarySensorEntityDescription(
+            key="stuck",
+            translation_key="stuck",
+            name="Stuck",
+            device_class=BinarySensorDeviceClass.PROBLEM,
+        )
+        self._attr_unique_id = f"{coordinator.device_id}_stuck"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.device_id)},
+            manufacturer="bObsweep",
+            model=coordinator.model_family,
+            name=DEFAULT_NAME,
+        )
+
+    @property
+    def _monitor(self) -> Any:
+        alerter = getattr(self.coordinator, "stuck", None)
+        return None if alerter is None else alerter.monitor
+
+    @property
+    def is_on(self) -> bool | None:
+        """True while a stuck fault is active, None without a monitor."""
+        monitor = self._monitor
+        return None if monitor is None else monitor.active is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The active-or-last stuck event, including its `message`."""
+        monitor = self._monitor
+        return {} if monitor is None else monitor.as_attributes()
+
+
 def _supported(spec: FamilySpec, description: BobsweepBinarySensorEntityDescription) -> bool:
     """Return True if the family has everything this description needs."""
     if description.required_dps and not any(
@@ -306,7 +365,7 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     spec = coordinator.spec
 
-    entities: list[BobsweepBinarySensor] = []
+    entities: list[BinarySensorEntity] = []
     for description in BINARY_SENSOR_DESCRIPTIONS:
         if not _supported(spec, description):
             _LOGGER.debug(
@@ -316,5 +375,15 @@ async def async_setup_entry(
             )
             continue
         entities.append(BobsweepBinarySensor(coordinator, description))
+
+    # Stuck detection exists whenever the coordinator built a monitor for it,
+    # i.e. whenever the family has a fault datapoint. `getattr`: a coordinator
+    # from an older install must not take the platform down.
+    if getattr(coordinator, "stuck", None) is not None:
+        entities.append(BobsweepStuckBinarySensor(coordinator))
+    else:
+        _LOGGER.debug(
+            "Skipping bObsweep stuck sensor: family %s has no fault datapoint", spec.key
+        )
 
     async_add_entities(entities)
