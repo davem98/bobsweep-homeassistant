@@ -15,7 +15,8 @@ Logic that does not need Home Assistant lives in HA-free modules
 
 The setup that cannot be automatic — room ids, room geometry, voice — is
 written as a step-by-step playbook in `docs/ROOMS.md`, and packaged as an
-agent skill in `skills/bobsweep-rooms/SKILL.md`. Follow that
+agent skill in `skills/bobsweep-rooms/SKILL.md` (copy or symlink that folder
+into `.claude/skills/` to have Claude Code load it automatically). Follow that
 playbook rather than improvising: it encodes what was measured on real
 hardware (which frames exist, which do not, what the app's map screenshot
 can and cannot yield).
