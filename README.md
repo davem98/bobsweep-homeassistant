@@ -373,6 +373,14 @@ a boolean datapoint written as the string `"True"`.
 Settings → Devices & Services → **Add Integration** → **bObsweep (local)** →
 enter `host`, `device_id`, `local_key`, `protocol_version`, `model_family`.
 
+## Icon
+
+Home Assistant shows integration icons only from its central
+[brands](https://github.com/home-assistant/brands) repository, so the icon
+in `brand/` (an original mark, not the manufacturer's logo) appears in the UI
+once it is merged there under `custom_integrations/bobsweep/`. Until then
+the integration shows the generic placeholder.
+
 ## Troubleshooting
 
 - **`cannot_connect` during setup.** Almost always the wrong
