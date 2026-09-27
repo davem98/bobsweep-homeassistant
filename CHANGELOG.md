@@ -11,6 +11,16 @@ families are derived from the vendor app's own datapoint tables and remain
 ## [Unreleased]
 
 ### Added
+- **A setup guide for rooms, zones and voice** (`docs/ROOMS.md`), an
+  `AGENTS.md` and a Claude Code skill (`skills/bobsweep-rooms/`) so
+  an assistant can walk a user through it, `tools/map_zones.py` to turn a
+  screenshot of the vendor app's map into importable zones (calibrated on
+  the robot's own no-go rectangles), and `custom_sentences/en/bobsweep.yaml`
+  with "tell Rosie to go clean up the kitchen" phrasings for Assist.
+- The robot's **no-go rectangles** are decoded from the `eAll` reply and
+  exposed as `no_go_zones` on the current-room sensor.
+- An integration icon under `brand/`, for the Home Assistant brands
+  repository.
 - **Job-ending faults alert too.** The stuck sensor, notification and
   `bobsweep_stuck` event now also fire for any real fault that ends a job
   while the robot is off the dock (a jammed brush, for instance), with a

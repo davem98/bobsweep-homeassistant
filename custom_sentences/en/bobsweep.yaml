@@ -1,0 +1,34 @@
+# Extra voice phrasings for a bObsweep vacuum -- Home Assistant Assist.
+#
+# Copy this file to <config>/custom_sentences/en/bobsweep.yaml and reload
+# (Developer tools -> YAML -> Conversation), or restart. It adds "tell Rosie
+# to go clean up the kitchen"-style sentences to Home Assistant's built-in
+# HassVacuumCleanArea intent, which already understands "vacuum the kitchen"
+# and "clean the kitchen with Rosie".
+#
+# {name} is your vacuum entity's name (set it in the integration's config
+# flow, or rename the device); {area} is a Home Assistant area that you have
+# mapped a room segment onto in the vacuum entity's settings. Both are the
+# built-in lists, so nothing here needs editing for your names.
+#
+# An LLM-backed conversation agent does not need this file: it reads the
+# exposed entity and the areas and phrases itself. Only the built-in Assist
+# matcher needs templates.
+
+language: "en"
+
+intents:
+  HassVacuumCleanArea:
+    data:
+      - sentences:
+          - "(tell|ask|have|get|send) [<the>] {name} to [go [and]] <clean> [up] [<the>] {area}"
+          - "{name} [please] [go [and]] <clean> [up] [<the>] {area} [please]"
+          - "[please] [go [and]] <clean> [up] [<the>] {area} [please]"
+          - "(send|get) [<the>] {name} (to|into) [<the>] {area}"
+        name_domains:
+          - "vacuum"
+        response: "default"
+
+expansion_rules:
+  the: "(the|my|our)"
+  clean: "(clean|vacuum|sweep|hoover|tidy|do)"

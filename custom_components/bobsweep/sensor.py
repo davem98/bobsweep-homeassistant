@@ -508,8 +508,23 @@ class BobsweepCurrentRoomSensor(CoordinatorEntity[BobsweepCoordinator], SensorEn
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Position, last known room, zone provenance and staleness."""
-        return self.coordinator.rooms.attributes()
+        """Position, last known room, zone provenance, staleness -- and the
+        robot's own no-go rectangles.
+
+        `no_go_zones` is the one piece of geometry the robot reports in its own
+        map cells (the hatched boxes on the vendor app's map). It is here so
+        a screenshot of that map can be calibrated into zones with
+        `tools/map_zones.py` without a packet capture: the boxes are visible
+        in the picture and known on the wire, which pins scale, offset and
+        orientation.
+        """
+        attrs = self.coordinator.rooms.attributes()
+        info = getattr(self.coordinator, "robot_info", None)
+        rects = getattr(info, "no_go_zones", None)
+        attrs["no_go_zones"] = (
+            None if rects is None else [[list(corner) for corner in rect] for rect in rects]
+        )
+        return attrs
 
 
 class BobsweepRobotInfoSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):

@@ -153,6 +153,11 @@ for up to 90 seconds. But the robot streams those points only while the app's
 map session is driving it; requests issued by this integration go unanswered
 (so far — see below). In practice that means:
 
+- **Zones can come from the app's map.** The robot reports its no-go
+  rectangles in its own map cells (`no_go_zones` on the current-room sensor)
+  and the app draws the same rectangles on its map, so a screenshot of that
+  map can be calibrated and cut into room zones — `tools/map_zones.py`, see
+  [`docs/ROOMS.md`](docs/ROOMS.md). No position feed needed.
 - **Teaching zones works.** Open the app's map screen, drive or send the robot
   around a room, and run the capture services: positions flow.
 - **Unattended cleans have no position.** With the app closed, `current_room`
@@ -311,6 +316,14 @@ Two ways in:
   (the built-in `HassVacuumCleanArea` intent) — sends the right room ids.
   Aliases on the area ("mudroom", "back hall") work the way they do for any
   area. The vacuum entity has to be exposed to Assist like any other.
+
+**Setting all of this up — room ids, names, the map, voice — is a one-sitting
+job written out step by step in [`docs/ROOMS.md`](docs/ROOMS.md).** It
+includes `tools/map_zones.py`, which turns a screenshot of the vendor app's
+map into zones, and `custom_sentences/en/bobsweep.yaml`, which adds "tell
+Rosie to go clean up the kitchen" phrasings to Assist. Agents (Claude Code and
+the like) get the same playbook via `AGENTS.md` and
+`skills/bobsweep-rooms/`.
 
 A room the robot has not revealed yet (no schedule targets it, no clean has
 been acked for it, nobody has named it) is invisible to both routes until you

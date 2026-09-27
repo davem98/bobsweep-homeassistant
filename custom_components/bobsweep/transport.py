@@ -962,6 +962,35 @@ class ScheduleEntry:
         return raw[index] if len(raw) == 4 else None
 
 
+def decode_rectangles(data: bytes) -> list[list[tuple[int, int]]] | None:
+    """Decode a rectangle-list payload: `[count]` then 16 bytes per rectangle.
+
+    Each rectangle is four corners, each a big-endian signed int16 `x` then
+    `y`, in raw map cells -- the frame the no-go zones (`0xAA 0x24`,
+    `eRestrictedToApp`) and the no-mop zones (`0xBB 0x12`) both use, and the
+    same frame as every other coordinate on DP 105. The `len == count*16 + 1`
+    test is the vendor app's own (`handleCleaningZonesCmd`); anything else is
+    rejected whole rather than partly decoded. Confirmed against the five
+    rectangles captured on 2026-08-31, which the app draws as the hatched
+    no-go boxes on its map.
+    """
+    if not data:
+        return None
+    count = data[0]
+    if len(data) != count * 16 + 1:
+        return None
+    rects: list[list[tuple[int, int]]] = []
+    for index in range(count):
+        base = 1 + index * 16
+        rects.append(
+            [
+                (_int16(data[base + k], data[base + k + 1]), _int16(data[base + k + 2], data[base + k + 3]))
+                for k in range(0, 16, 4)
+            ]
+        )
+    return rects
+
+
 def decode_saved_maps(data: bytes) -> list[SavedMap] | None:
     """Decode a 0xBB cmd-0x18 payload into saved maps, or None if malformed.
 
@@ -1164,6 +1193,7 @@ class RobotInfoTracker:
     #: The (header, cmd) pairs this tracker consumes.
     _OWNED = frozenset(
         {
+            (HEADER_AA, CMD_RESTRICTED_TO_APP),
             (HEADER_BB, CMD_SUPPORT_FEATURES_TO_APP),
             (HEADER_BB, CMD_NAMED_SCHEDULE_TO_APP),
             (HEADER_BB, CMD_SAVED_MAP_NAMES_TO_APP),
@@ -1185,6 +1215,12 @@ class RobotInfoTracker:
         self.feature_bits: bytes | None = None
         #: Map rotate angle in degrees from the last 0x31.
         self.rotate_angle: int | None = None
+        #: The no-go rectangles from the last `0xAA 0x24` (part of the `eAll`
+        #: reply), as lists of four (x, y) corners in map cells. These are the
+        #: hatched boxes on the app's map, and the one piece of geometry the
+        #: robot states in its own coordinates -- which is what makes a
+        #: screenshot of that map calibratable (see `tools/map_zones.py`).
+        self.no_go_zones: list[list[tuple[int, int]]] | None = None
         #: room id → name, derived from `schedules`; recomputed on every change.
         self.room_names: dict[int, str] = {}
         #: Owned frames decoded / owned frames rejected as malformed.
@@ -1268,6 +1304,13 @@ class RobotInfoTracker:
             self.rotate_angle = angle
             return True
 
+        if frame.header == HEADER_AA and frame.cmd == CMD_RESTRICTED_TO_APP:
+            rects = decode_rectangles(frame.data)
+            if rects is None:
+                return False
+            self.no_go_zones = rects
+            return True
+
         return False  # unreachable while _OWNED and this branch table agree
 
     @property
@@ -1296,6 +1339,11 @@ class RobotInfoTracker:
             "mop_cloth_version": self.mop_cloth_version,
             "feature_bits": None if self.feature_bits is None else self.feature_bits.hex(),
             "rotate_angle": self.rotate_angle,
+            "no_go_zones": (
+                None
+                if self.no_go_zones is None
+                else [[list(corner) for corner in rect] for rect in self.no_go_zones]
+            ),
             "age": None if age is None else round(age, 1),
             "frames_seen": self.frames_seen,
             "frames_rejected": self.frames_rejected,
@@ -1309,6 +1357,7 @@ class RobotInfoTracker:
         self.mop_cloth_version = None
         self.feature_bits = None
         self.rotate_angle = None
+        self.no_go_zones = None
         self.room_names = {}
         self.frames_seen = 0
         self.frames_rejected = 0
