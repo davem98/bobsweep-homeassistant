@@ -10,6 +10,18 @@ families are derived from the vendor app's own datapoint tables and remain
 
 ## [Unreleased]
 
+### Added
+- **Voice control beyond room cleaning**, for Home Assistant Assist: "stop
+  Rosie", "pause Rosie", "Rosie, carry on", "send Rosie home", "where is
+  Rosie" / "what is Rosie doing". Home Assistant has no stop, pause or status
+  intent for vacuums, so the integration now registers `BobsweepVacuumStop`,
+  `BobsweepVacuumPause` and `BobsweepVacuumStatus` (they act on any exposed
+  vacuum; "stop the vacuum" without a name only acts when exactly one vacuum
+  is exposed). Resume and dock phrasings are added to the built-in
+  `HassVacuumStart` / `HassVacuumReturnToBase`. Sentences are in
+  `custom_sentences/en/bobsweep.yaml`. Requires a Home Assistant restart.
+  Pause (DP 101) is still unverified on hardware.
+
 ## [0.6.0] — 2026-10-02
 
 ### Added
