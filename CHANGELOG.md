@@ -10,6 +10,8 @@ families are derived from the vendor app's own datapoint tables and remain
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-02
+
 ### Added
 - **A setup guide for rooms, zones and voice** (`docs/ROOMS.md`), an
   `AGENTS.md` and a Claude Code skill (`skills/bobsweep-rooms/`) so
