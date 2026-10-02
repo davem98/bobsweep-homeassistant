@@ -51,8 +51,13 @@ directly.
 5. **Voice.** Have the user map segments to areas in the vacuum entity's
    settings and expose the entity under Settings → Voice assistants
    (registry writes need an admin session; a non-admin token cannot do
-   this). For "tell Rosie to clean the …" phrasings, install
-   `custom_sentences/en/bobsweep.yaml` into their config and reload.
+   this). For "tell Rosie to clean the …" phrasings, and for stop / pause /
+   resume / "send Rosie home" / "what is Rosie doing", install
+   `custom_sentences/en/bobsweep.yaml` into their config and reload. The
+   stop, pause and status intents are registered by the integration, so
+   they need it loaded (restart after installing or updating it). An
+   LLM-backed agent needs no sentence file, only the exposed entity and an
+   alias for the spoken name.
 6. **Test** with `bobsweep.clean_rooms` on one room, then `vacuum.stop`
    and `vacuum.return_to_base`. Warn the user before starting the robot.
 
