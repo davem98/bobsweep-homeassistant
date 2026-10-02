@@ -11,6 +11,20 @@
 # mapped a room segment onto in the vacuum entity's settings. Both are the
 # built-in lists, so nothing here needs editing for your names.
 #
+# It also adds the everyday controls:
+#   stop    -- "stop Rosie", "tell Rosie to stop", "stop the vacuum"
+#   pause   -- "pause Rosie", "tell Rosie to pause"
+#   resume  -- "resume Rosie", "Rosie, carry on"        (HassVacuumStart)
+#   dock    -- "send Rosie home", "tell Rosie to go back to its base"
+#                                                      (HassVacuumReturnToBase)
+#   status  -- "where is Rosie", "what is Rosie doing"
+# Home Assistant has no stop, pause or status intent for vacuums, so those
+# three (BobsweepVacuumStop / BobsweepVacuumPause / BobsweepVacuumStatus) are
+# registered by the bObsweep integration itself; they work for any exposed
+# vacuum. The forms without a name ("stop the vacuum") only act when exactly
+# one vacuum is exposed to Assist (or the voice satellite's area picks one);
+# otherwise Assist asks which.
+#
 # An LLM-backed conversation agent does not need this file: it reads the
 # exposed entity and the areas and phrases itself. Only the built-in Assist
 # matcher needs templates.
@@ -29,6 +43,92 @@ intents:
           - "vacuum"
         response: "default"
 
+  BobsweepVacuumStop:
+    data:
+      - sentences:
+          - "<bobsweep_tell> [<the>] {name} to <bobsweep_stop>"
+          - "{name} [please] <bobsweep_stop> [please]"
+          - "(stop|halt) [<the>] {name} [please]"
+        requires_context:
+          domain: "vacuum"
+        response: "default"
+      - sentences:
+          - "(stop|halt) [<the>] <bobsweep_vacuum> [please]"
+          - "<bobsweep_tell> [<the>] <bobsweep_vacuum> to <bobsweep_stop>"
+        response: "default"
+
+  BobsweepVacuumPause:
+    data:
+      - sentences:
+          - "<bobsweep_tell> [<the>] {name} to <bobsweep_pause>"
+          - "{name} [please] <bobsweep_pause> [please]"
+          - "pause [<the>] {name} [please]"
+        requires_context:
+          domain: "vacuum"
+        response: "default"
+      - sentences:
+          - "pause [<the>] <bobsweep_vacuum> [please]"
+          - "<bobsweep_tell> [<the>] <bobsweep_vacuum> to <bobsweep_pause>"
+        response: "default"
+
+  HassVacuumStart:
+    data:
+      - sentences:
+          - "(resume|unpause|continue) [<the>] {name} [please]"
+          - "<bobsweep_tell> [<the>] {name} to <bobsweep_resume>"
+          - "{name} [please] <bobsweep_resume> [please]"
+        requires_context:
+          domain: "vacuum"
+        response: "bobsweep_resume"
+
+  HassVacuumReturnToBase:
+    data:
+      - sentences:
+          - "send [<the>] {name} (home|back home|<bobsweep_to_dock>|[back] to (charge|recharge)) [please]"
+          - "dock [<the>] {name} [please]"
+          - "<bobsweep_tell> [<the>] {name} to <bobsweep_go_home>"
+          - "{name} [please] <bobsweep_go_home> [please]"
+        requires_context:
+          domain: "vacuum"
+        response: "bobsweep_dock"
+
+  BobsweepVacuumStatus:
+    data:
+      - sentences:
+          - "(where is|where's|wheres) [<the>] {name}"
+          - "(what is|what's|whats) [<the>] {name} (doing|up to)"
+          - "(what is|what's|whats) [the] status of [<the>] {name}"
+          - "(how is|how's|hows) [<the>] {name} (doing|getting on)"
+          - "[<the>] {name} status"
+        requires_context:
+          domain: "vacuum"
+      - sentences:
+          - "(where is|where's|wheres) [<the>] <bobsweep_vacuum>"
+          - "(what is|what's|whats) [<the>] <bobsweep_vacuum> (doing|up to)"
+          - "(what is|what's|whats) [the] status of [<the>] <bobsweep_vacuum>"
+          - "[<the>] <bobsweep_vacuum> status"
+
+responses:
+  intents:
+    BobsweepVacuumStop:
+      default: "Stopping"
+    BobsweepVacuumPause:
+      default: "Pausing"
+    HassVacuumStart:
+      bobsweep_resume: "Resuming"
+    HassVacuumReturnToBase:
+      bobsweep_dock: "Heading back to the dock"
+    # BobsweepVacuumStatus speaks its own answer.
+
 expansion_rules:
   the: "(the|my|our)"
   clean: "(clean|vacuum|sweep|hoover|tidy|do)"
+  # The rules below are prefixed so they cannot override a built-in rule.
+  bobsweep_tell: "(tell|ask|have|get)"
+  bobsweep_vacuum: "(vacuum [cleaner]|robot [vacuum]|hoover|robovac)"
+  bobsweep_stop: "(stop|halt|stop (cleaning|vacuuming)|quit)"
+  bobsweep_pause: "(pause|hold on|wait|take a break)"
+  bobsweep_resume: "(resume|continue|carry on|keep going|start [cleaning]|get back to (work|cleaning))"
+  bobsweep_dock: "(base|dock|charger|home base|charging (base|dock|station)|docking station)"
+  bobsweep_to_dock: "[back] to [(the|its|her|his)] <bobsweep_dock>"
+  bobsweep_go_home: "(go [back] home|go <bobsweep_to_dock>|return [<bobsweep_to_dock>]|dock|go dock|[go [and]] (charge|recharge))"

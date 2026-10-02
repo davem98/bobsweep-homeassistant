@@ -102,10 +102,48 @@ Home Assistant 2026.3+ exposes each named room as a vacuum **segment**.
 
 For the more natural "tell Rosie to go clean up the family room", drop
 `custom_sentences/en/bobsweep.yaml` from this repository into your Home
-Assistant `config/custom_sentences/en/` folder and reload — it adds those
-phrasings to the same intent. If your assistant is an LLM-backed
-conversation agent, it needs neither: it reads the exposed entity's name and
-the areas, and phrases itself.
+Assistant `config/custom_sentences/en/` folder and reload (Developer tools →
+YAML → Conversation) — it adds those phrasings to the same intent.
+
+The same file adds the everyday controls:
+
+| Say | Does |
+| --- | --- |
+| "stop Rosie", "tell Rosie to stop", "Rosie, stop", "stop the vacuum" | `vacuum.stop` — halts where it is; it does **not** go home |
+| "pause Rosie", "tell Rosie to pause", "Rosie, hold on" | `vacuum.pause` |
+| "resume Rosie", "Rosie, carry on", "tell Rosie to keep going" | `vacuum.start` |
+| "send Rosie home", "tell Rosie to go back to its base", "Rosie, go charge", "dock Rosie" | `vacuum.return_to_base` |
+| "where is Rosie", "what is Rosie doing", "what's the vacuum up to" | spoken answer: activity, current room (when known), battery |
+
+Resume and dock add phrasings to Home Assistant's own `HassVacuumStart` and
+`HassVacuumReturnToBase`. Home Assistant has no stop, pause or status intent
+for vacuums, so the integration registers its own (`BobsweepVacuumStop`,
+`BobsweepVacuumPause`, `BobsweepVacuumStatus`); they need the integration
+loaded — a Home Assistant **restart** after installing or updating it, not
+just a conversation reload. They act on any exposed vacuum by name or alias.
+The forms without a name ("stop the vacuum", "where is the vacuum") act only
+when exactly one vacuum is exposed to Assist, or the voice satellite's area
+picks one; otherwise Assist asks which.
+
+Caveats, measured vs not:
+
+- **Pause** writes the dedicated pause datapoint (DP 101), transcribed from
+  the vendor app but **not yet verified on hardware**. Families without it
+  fall back to stopping.
+- **Resume** is the standard start, which asks for the family's automatic
+  (whole-floor) clean. Whether that continues a paused *room* clean or
+  starts a fresh full clean has not been tested; to be sure, repeat the room
+  command ("tell Rosie to clean the kitchen").
+- The room in the status answer comes from the current-room sensor, which
+  stays `unknown` until a position source and zones are in place; the answer
+  then simply leaves the room out.
+
+If your assistant is an LLM-backed conversation agent, it needs none of the
+sentence file: it reads the exposed entities and areas and phrases itself.
+It still needs the vacuum entity **exposed** to Assist, and the name you
+actually say ("Rosie") set as the entity's name or as an **alias** (entity
+settings → Voice assistants → Aliases); an LLM agent matches on those, not
+on the device's model name.
 
 ## 4. What the integration still cannot do
 

@@ -321,7 +321,11 @@ Two ways in:
 job written out step by step in [`docs/ROOMS.md`](docs/ROOMS.md).** It
 includes `tools/map_zones.py`, which turns a screenshot of the vendor app's
 map into zones, and `custom_sentences/en/bobsweep.yaml`, which adds "tell
-Rosie to go clean up the kitchen" phrasings to Assist. Agents (Claude Code and
+Rosie to go clean up the kitchen" phrasings to Assist, plus "stop Rosie",
+"pause Rosie", "Rosie, carry on", "send Rosie home" and "what is Rosie
+doing" (the integration registers the stop, pause and status intents Home
+Assistant lacks; pause is transcribed from the app, not yet verified on
+hardware). Agents (Claude Code and
 the like) get the same playbook via `AGENTS.md` and
 `skills/bobsweep-rooms/`.
 
