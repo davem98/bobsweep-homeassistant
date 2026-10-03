@@ -102,6 +102,15 @@ NON_STOPPING_FAULTS: frozenset[str] = frozenset(
 )
 
 
+#: Statuses that mean the robot has given up and gone to sleep. Reached off
+#: the dock with a job still open, they are the "stranded" case: measured
+#: 2026-10-03, a failed return (`goto_charge` -> `standby` with
+#: `charging_station`, then `sleep` 15 min later) left the robot asleep in
+#: another room for hours with no fault that ends a job, so nothing alerted.
+#: Families that sleep on the dock list `sleep` as docked, which wins.
+STRANDED_STATUSES: frozenset[str] = frozenset({"sleep"})
+
+
 def _utcnow() -> datetime:
     """Timezone-aware UTC now; a function so tests can patch it."""
     return datetime.now(timezone.utc)
@@ -144,8 +153,12 @@ class StuckEvent:
 
     * ``"stuck"`` -- a slug from `STUCK_FAULTS` appeared: the robot says it
       cannot move.
+    * ``"stranded"`` -- no fault that ends a job, but the robot went to sleep
+      off the dock with the job still open (typically a failed return to the
+      dock). See `STRANDED_STATUSES`.
     * ``"fault"`` -- any other real fault appeared while a job was open and the
-      robot was off the dock. It can move, but it will not: the job is over and
+      robot was off the dock. A fault already present when the job started
+      does not count: the robot started and cleaned with it. It can move, but it will not: the job is over and
       it is sitting wherever it was. Measured 2026-09-26: a `side_brush`
       (jammed side brush) nine minutes into a scheduled clean left the robot
       asleep on the floor for hours with nothing reporting it, because a brush
@@ -160,7 +173,7 @@ class StuckEvent:
     faults: tuple[str, ...]
     #: The status DP value at the time (`standby` in the measured event).
     status: str | None
-    #: ``"stuck"`` or ``"fault"``; see the class docstring.
+    #: ``"stuck"``, ``"fault"`` or ``"stranded"``; see the class docstring.
     kind: str = "stuck"
     #: The rooms the current job was told to clean, if known.
     #: Each is `{"id": int, "name": str}`; the name falls back to `Room <id>`.
@@ -264,6 +277,10 @@ def describe(event: StuckEvent) -> str:
 
     if event.kind == "fault":
         head = f"Stopped by a {event.primary} fault"
+    elif event.kind == "stranded":
+        head = "Asleep away from the dock"
+        if event.primary and event.primary != "stranded":
+            head += f" ({event.primary})"
     else:
         head = f"Stuck ({event.primary})"
     if event.rooms:
@@ -356,6 +373,10 @@ class StuckMonitor:
         self.active: StuckEvent | None = None
         self.last: StuckEvent | None = None
         self.events_seen = 0
+        # Stopping faults already set when the current job opened (None while
+        # no job is open). They did not stop the robot starting, so they are
+        # not what stopped it later.
+        self._job_baseline: frozenset[str] | None = None
 
     def update(
         self,
@@ -388,6 +409,15 @@ class StuckMonitor:
         status_text = None if status is None else str(status)
         docked = status_text in self.docked_statuses
 
+        if not job_open:
+            self._job_baseline = None
+        elif self._job_baseline is None:
+            self._job_baseline = frozenset(stopping)
+        new_stopping = tuple(
+            slug for slug in stopping if slug not in (self._job_baseline or ())
+        )
+        stranded = job_open and not docked and status_text in STRANDED_STATUSES
+
         # A stuck slug arriving while a lesser "fault" event is active upgrades
         # it: the stuck alert is the precise one and must not be masked by a
         # brush jam reported a moment earlier. It counts as a new event.
@@ -398,8 +428,12 @@ class StuckMonitor:
         if self.active is None or upgrade:
             if active_stuck:
                 kind, primary = "stuck", active_stuck[0]
-            elif stopping and job_open and not docked:
-                kind, primary = "fault", stopping[0]
+            elif new_stopping and job_open and not docked:
+                kind, primary = "fault", new_stopping[0]
+            elif stranded and not upgrade:
+                # Name the fault that explains it if there is one
+                # (`charging_station` after a failed return).
+                kind, primary = "stranded", (faults[0] if faults else "stranded")
             else:
                 return None
             self.active = self._build_event(
@@ -425,7 +459,12 @@ class StuckMonitor:
         # turning up on the dock (someone carried it back and the bit lags).
         # A "stuck" event clears as soon as the stuck slug itself is gone, even
         # if a lesser fault remains -- that is the old behaviour, kept.
-        gone = not active_stuck if self.active.kind == "stuck" else not stopping
+        if self.active.kind == "stuck":
+            gone = not active_stuck
+        elif self.active.kind == "stranded":
+            gone = not stranded
+        else:
+            gone = not stopping
         if gone or docked:
             self.active = None
             return "cleared"
@@ -503,6 +542,7 @@ EVENT_STUCK = "bobsweep_stuck"
 EVENT_STUCK_CLEARED = "bobsweep_stuck_cleared"
 NOTIFICATION_TITLE = "bObsweep is stuck"
 NOTIFICATION_TITLE_FAULT = "bObsweep stopped: {fault}"
+NOTIFICATION_TITLE_STRANDED = "bObsweep is asleep away from the dock"
 
 
 def _job_rooms(coordinator: Any) -> Any | None:
@@ -655,6 +695,8 @@ class StuckAlerter:
                 title=(
                     NOTIFICATION_TITLE_FAULT.format(fault=event.primary)
                     if event.kind == "fault"
+                    else NOTIFICATION_TITLE_STRANDED
+                    if event.kind == "stranded"
                     else NOTIFICATION_TITLE
                 ),
                 notification_id=self.notification_id,

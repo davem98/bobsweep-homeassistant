@@ -12,10 +12,14 @@ Three channels, two wire formats:
   SLAM, 15 on Vision, 15 on Random.
 * **DP 113** (`COMMAND_ERROR_REPORTED2`, SLAM only) — plain integer bitmask over
   the 30-entry `fault_bits2` table.
-* **DP 131** (`COMMAND_FAULT_BITS`, SLAM only) — *not* an integer: a byte array
-  (hex string over the wire) packed LSB-first, `bitIndex = byteIndex * 8 + bit`,
+* **DP 131** (`COMMAND_FAULT_BITS`, SLAM only) — *not* an integer: a raw byte
+  array packed LSB-first, `bitIndex = byteIndex * 8 + bit`,
   over the 40-entry `fault_bits_raw` table. Bits 0-29 repeat DP 113's list; bits
-  30-39 are ten station/water faults that exist nowhere else.
+  30-39 are ten station/water faults that exist nowhere else. Over the LAN
+  (tinytuya) a raw DP arrives **base64**, not hex: measured 2026-10-03, the
+  idle value is `"AAAAAAAA"` (six zero bytes). The app shows raw DPs as hex
+  because that is its SDK's convention; reading the base64 text as hex turned
+  `AAAAAAAA` into `0xAAAAAAAA` and fifteen phantom faults.
 
 Two behaviours are inherited from the app itself:
 
@@ -30,6 +34,8 @@ at debug, because the callers are HA state properties.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 from dataclasses import dataclass, field
@@ -128,10 +134,12 @@ def _int_bits(value: Any) -> set[int] | None:
 def _packed_bits(value: Any) -> set[int] | None:
     """Bit indices set in a byte-array DP (DP 131), read LSB-first.
 
-    `bitIndex = byteIndex * 8 + bit`. A hex string is parsed byte by byte in the
-    order it arrives; a list of ints is treated as those bytes; a plain int is
-    read directly, which is equivalent (bit i of a little-endian integer is bit
-    i%8 of byte i//8). Returns None when the value is non-empty but unparseable.
+    `bitIndex = byteIndex * 8 + bit`. A string is base64 first -- that is how
+    tinytuya delivers a raw DP (see the module docstring) -- and hex only when
+    it carries a `0x` prefix or is not valid base64; a list of ints is treated
+    as those bytes; a plain int is read directly, which is equivalent (bit i of
+    a little-endian integer is bit i%8 of byte i//8). Returns None when the
+    value is non-empty but unparseable.
     """
     data: bytes | None = None
 
@@ -149,10 +157,17 @@ def _packed_bits(value: Any) -> set[int] | None:
         # Already an integer: LSB-first packing makes this identical to bytes.
         return _int_bits(value)
     elif isinstance(value, str):
-        text = value.strip().lower()
-        if text.startswith("0x"):
-            text = text[2:]
-        if text and all(c in "0123456789abcdef" for c in text):
+        text = value.strip()
+        if text and not text.lower().startswith("0x") and len(text) % 4 == 0:
+            try:
+                data = base64.b64decode(text, validate=True)
+            except (binascii.Error, ValueError):
+                data = None
+        if data is None:
+            text = text.lower()
+            if text.startswith("0x"):
+                text = text[2:]
+        if data is None and text and all(c in "0123456789abcdef" for c in text):
             if len(text) % 2:
                 text = "0" + text
             try:

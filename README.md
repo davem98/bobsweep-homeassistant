@@ -190,27 +190,33 @@ the trail only flows while the vendor app's map screen is open (see
 [Room awareness](#room-awareness)).
 
 So the integration alerts on the *transition* into a stranded state and
-attaches the best location it honestly has. Two things count: a **stuck**
-fault (the robot says it cannot move), and **any other fault that ends a job
+attaches the best location it honestly has. Three things count: a **stuck**
+fault (the robot says it cannot move); **any other fault that ends a job
 while the robot is off the dock** — a jammed side brush nine minutes into a
 scheduled clean leaves it asleep on the floor just as surely, and that case
-is the one that actually happened. Faults reported while docked are not
-alerts; the robot is home. The `kind` attribute (`stuck` / `fault`) tells
+is the one that actually happened; and **falling asleep off the dock with
+the job still open**, which is what a failed return to the dock looks like
+(it hunts, gives up, and sleeps where it stopped, with no job-ending fault).
+Faults reported while docked are not alerts; the robot is home. Neither is a
+fault that was already set when the job started: the robot started and
+cleaned with it. The `kind` attribute (`stuck` / `fault` / `stranded`) tells
 them apart.
 
 - **`binary_sensor.<name>_stuck`** (problem class) is on while a fault meaning
   "cannot move on its own" is active — `bob_stuck`, a wheel fault, a bumper
   held pressed, a cliff sensor, or the robot reporting itself boxed in — or
-  while a job-ending fault is active off the dock. It clears when the fault
-  bits drop or the robot turns up on the dock. Its attributes are the event:
+  while a job-ending fault is active off the dock, or while the robot is
+  asleep off the dock mid-job. It clears when the fault bits drop, the robot
+  wakes and moves, or it turns up on the dock. Its attributes are the event:
   the `kind`, the fault, all active faults, the status, the rooms the job
   was told to clean (when known for this job, with `rooms_source` and the
   schedule name), the last known position with its source, exactness and age, the taught
   zone that position falls in, the nearest reported obstacle, and a `message`.
 - **`sensor.<name>_last_stuck`** (timestamp, diagnostic) keeps the most recent
-  event after the robot is freed.
+  event after the robot is freed, and across Home Assistant restarts.
 - A **persistent notification** titled "bObsweep is stuck" (or "bObsweep
-  stopped: <fault>") is created on the transition and dismissed when it clears.
+  stopped: <fault>", or "bObsweep is asleep away from the dock") is created on
+  the transition and dismissed when it clears.
 - Events **`bobsweep_stuck`** and **`bobsweep_stuck_cleared`** fire on the bus
   with the same payload plus `device_id` and `entry_id`.
 

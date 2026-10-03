@@ -22,7 +22,22 @@ families are derived from the vendor app's own datapoint tables and remain
   `custom_sentences/en/bobsweep.yaml`. Requires a Home Assistant restart.
   Pause (DP 101) is still unverified on hardware.
 
+- **"Stranded" alerts.** A robot that gives up looking for its dock and goes
+  to sleep on the floor with the job still open now raises the stuck alert
+  with `kind: stranded` ("bObsweep is asleep away from the dock"), naming
+  the fault that explains it when there is one (`charging_station`). Before,
+  a failed return raised nothing, because no job-ending fault is involved.
+
 ### Fixed
+- **Phantom faults from DP 131.** The station/water fault datapoint arrives
+  base64 over the LAN, not hex. Read as hex, its idle value `AAAAAAAA` decoded
+  to fifteen faults (camera, water dispenser, dust bag, mop...) that the robot
+  never reported, and those fed false stuck alerts. It is now decoded as
+  base64 (an explicit `0x` hex string is still accepted).
+- **No alert for a fault that was already there when the job started.** The
+  stuck/fault alert opened at the start of every clean while a fault was
+  already set, saying "Stopped by ..." although the robot went on cleaning.
+  Only faults that appear during a job now open a `fault` event.
 - **Last stuck survives a restart.** `sensor.<name>_last_stuck` kept its
   event in memory only, so every Home Assistant restart blanked it. It now
   restores its previous timestamp and event attributes on startup (marked
