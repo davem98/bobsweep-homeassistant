@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -25,6 +26,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import BobsweepConfigEntry
@@ -657,7 +659,21 @@ class BobsweepMopClothSensor(BobsweepRobotInfoSensor):
         return None if info is None else info.mop_cloth_percent
 
 
-class BobsweepLastStuckSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):
+# Attribute keys of a stuck event (`StuckEvent.as_dict`); only these are
+# carried over from the restored state, not Home Assistant's own (friendly_name,
+# device_class, ...).
+_STUCK_EVENT_KEYS = frozenset(
+    {
+        "kind", "primary", "faults", "status", "rooms", "rooms_source",
+        "schedule", "schedule_time", "position", "stale_fix_age", "room",
+        "nearest_obstacle", "at", "message",
+    }
+)
+
+
+class BobsweepLastStuckSensor(
+    CoordinatorEntity[BobsweepCoordinator], SensorEntity, RestoreEntity
+):
     """When the robot last got stuck, with everything known about that moment.
 
     The state is the timestamp of the most recent transition into a stuck
@@ -665,9 +681,10 @@ class BobsweepLastStuckSensor(CoordinatorEntity[BobsweepCoordinator], SensorEnti
     the robot is freed, which is what "last time" means. The attributes are the
     event: the fault, the rooms the job was told to clean, the last known
     position with its provenance and age (or an honest "position unknown"), the
-    nearest reported obstacle, and the `message` sentence. *Unknown* until the
-    robot has been stuck once since Home Assistant started -- the event is not
-    persisted.
+    nearest reported obstacle, and the `message` sentence. The monitor keeps
+    the event in memory only, so the entity restores its own last state on
+    startup and shows that (with `restored: true`) until a new event replaces
+    it.
     """
 
     _attr_has_entity_name = True
@@ -689,6 +706,27 @@ class BobsweepLastStuckSensor(CoordinatorEntity[BobsweepCoordinator], SensorEnti
             model=coordinator.model_family,
             name=DEFAULT_NAME,
         )
+        self._restored_at: datetime | None = None
+        self._restored_attrs: dict[str, Any] = {}
+
+    async def async_added_to_hass(self) -> None:
+        """Pick up the event shown before the restart, if there was one."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is None:
+            return
+        try:
+            at = datetime.fromisoformat(str(last.state))
+        except ValueError:  # unknown / unavailable / never set
+            return
+        if at.tzinfo is None:
+            return
+        self._restored_at = at
+        self._restored_attrs = {
+            key: value
+            for key, value in last.attributes.items()
+            if key in _STUCK_EVENT_KEYS
+        }
 
     @property
     def _last(self) -> Any:
@@ -699,13 +737,17 @@ class BobsweepLastStuckSensor(CoordinatorEntity[BobsweepCoordinator], SensorEnti
     def native_value(self) -> Any:
         """The last stuck event's timestamp (tz-aware), or None."""
         event = self._last
-        return None if event is None else event.at
+        return self._restored_at if event is None else event.at
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """The last stuck event as a dict, or nothing yet."""
+        """The last stuck event as a dict, the restored one, or nothing yet."""
         event = self._last
-        return {} if event is None else event.as_dict()
+        if event is not None:
+            return event.as_dict()
+        if self._restored_at is not None:
+            return {**self._restored_attrs, "restored": True}
+        return {}
 
 
 class BobsweepLastObstacleSensor(CoordinatorEntity[BobsweepCoordinator], SensorEntity):

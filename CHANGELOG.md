@@ -22,6 +22,12 @@ families are derived from the vendor app's own datapoint tables and remain
   `custom_sentences/en/bobsweep.yaml`. Requires a Home Assistant restart.
   Pause (DP 101) is still unverified on hardware.
 
+### Fixed
+- **Last stuck survives a restart.** `sensor.<name>_last_stuck` kept its
+  event in memory only, so every Home Assistant restart blanked it. It now
+  restores its previous timestamp and event attributes on startup (marked
+  `restored: true`) until a new stuck event replaces them.
+
 ## [0.6.0] — 2026-10-02
 
 ### Added
