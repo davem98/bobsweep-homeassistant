@@ -288,7 +288,10 @@ class BobsweepCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 hass,
                 entry_id=entry.entry_id,
                 device_id=self.device_id,
-                monitor=StuckMonitor(docked_statuses=self.spec.status_docked),
+                monitor=StuckMonitor(
+                    docked_statuses=self.spec.status_docked,
+                    still_statuses=self.spec.status_paused | self.spec.status_error,
+                ),
             )
             if any(
                 dp is not None

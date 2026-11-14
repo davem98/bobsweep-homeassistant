@@ -666,7 +666,7 @@ _STUCK_EVENT_KEYS = frozenset(
     {
         "kind", "primary", "faults", "status", "rooms", "rooms_source",
         "schedule", "schedule_time", "position", "stale_fix_age", "room",
-        "nearest_obstacle", "at", "message",
+        "nearest_obstacle", "at", "carried", "message",
     }
 )
 

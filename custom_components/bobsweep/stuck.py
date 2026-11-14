@@ -110,6 +110,33 @@ NON_STOPPING_FAULTS: frozenset[str] = frozenset(
 #: Families that sleep on the dock list `sleep` as docked, which wins.
 STRANDED_STATUSES: frozenset[str] = frozenset({"sleep"})
 
+#: Statuses in which the robot is known to be standing still. Every other
+#: status that is not docked counts as driving -- the safe side, since driving
+#: time is what stops a position being carried forward (see below). Families
+#: add their paused and error statuses on top.
+STILL_STATUSES: frozenset[str] = frozenset(
+    {"standby", "sleep", "idle", "clean_finish", "pause", "paused"}
+)
+
+#: Carry-forward. When a stop has no usable fix, the robot is often still
+#: where an earlier stop *did* fix it, or next to the dock it just left.
+#: Measured 2026-11-13: a main-brush fault was fixed exactly in one room; the
+#: robot slept there 20 min, was restarted and faulted again ~10 s later, and
+#: the second alert said "position unknown" because the trail had sent nothing
+#: new (the robot had not moved). Another job faulted seconds after leaving the
+#: dock, with only the previous job's 15-min-old fix to go on.
+#:
+#: So the monitor keeps an *anchor* -- the last stop with a location, or the
+#: dock on arrival -- and counts the seconds spent in a driving status since.
+#: If that is at most this many seconds, a fix-less event reports the anchor,
+#: always marked approximate and carried. 30 s is a guess (a few metres of
+#: driving), not a measurement.
+CARRY_MAX_DRIVING_SECONDS = 30.0
+
+#: A fix taken when the robot reaches the dock is kept as the dock's position
+#: only if it is at most this old then (the trail was flowing on the way in).
+DOCK_FIX_MAX_AGE_SECONDS = 120.0
+
 
 def _utcnow() -> datetime:
     """Timezone-aware UTC now; a function so tests can patch it."""
@@ -128,6 +155,18 @@ def stopping_faults_in(faults: Iterable[str]) -> tuple[str, ...]:
 
 # --- the event ---------------------------------------------------------------
 @dataclass(frozen=True)
+class Carried:
+    """Where a carried-forward location came from (see `CARRY_MAX_DRIVING_SECONDS`)."""
+
+    #: ``"stop"`` (an earlier stop with a location) or ``"dock"``.
+    origin: str
+    #: When the anchor was taken: the earlier stop, or the arrival on the dock.
+    since: datetime
+    #: Seconds spent in a driving status between `since` and this event.
+    driving_seconds: float
+
+
+@dataclass(frozen=True)
 class PositionFix:
     """A position offered to the monitor, with the provenance it must carry.
 
@@ -143,6 +182,15 @@ class PositionFix:
     source: str
     approximate: bool = False
     age_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class _Anchor:
+    """The monitor's last known resting place; internal."""
+
+    origin: str
+    position: PositionFix | None
+    since: datetime
 
 
 @dataclass(frozen=True)
@@ -195,6 +243,9 @@ class StuckEvent:
     nearest_obstacle: Mapping[str, Any] | None = None
     #: When the transition was detected (UTC, tz-aware).
     at: datetime = field(default_factory=_utcnow)
+    #: Set when `position` / `room` were carried forward from an earlier stop
+    #: or the dock, instead of coming from a fix taken for this event.
+    carried: Carried | None = None
 
     @property
     def message(self) -> str:
@@ -234,6 +285,15 @@ class StuckEvent:
                 None if self.nearest_obstacle is None else dict(self.nearest_obstacle)
             ),
             "at": self.at.isoformat(timespec="seconds"),
+            "carried": (
+                None
+                if self.carried is None
+                else {
+                    "from": self.carried.origin,
+                    "since": self.carried.since.isoformat(timespec="seconds"),
+                    "driving_seconds": round(self.carried.driving_seconds, 1),
+                }
+            ),
             "message": self.message,
         }
 
@@ -291,6 +351,37 @@ def describe(event: StuckEvent) -> str:
         label = f'the {event.schedule_time} "{event.schedule}" schedule' if event.schedule else f"the {event.schedule_time} schedule"
         head += (" (" if event.rooms else " during ") + label + (")" if event.rooms else "")
     parts.append(head)
+
+    carried = event.carried
+    if carried is not None:
+        drove = f"at most {_age_text(carried.driving_seconds)} of driving since"
+        if carried.origin == "dock":
+            text = "probably near the dock"
+            if event.room:
+                text += f", in {event.room}"
+            text += f" ({drove} it left the dock)"
+            parts.append(text)
+            if event.position is not None:
+                parts.append(
+                    f"dock position ({event.position.x:.0f}, {event.position.y:.0f})"
+                    " (approximate)"
+                )
+        else:
+            since = max(0.0, (event.at - carried.since).total_seconds())
+            text = f"probably still where it stopped {_age_text(since)} earlier"
+            if event.room:
+                text += f", in {event.room}"
+            if event.position is not None:
+                text += f", at ({event.position.x:.0f}, {event.position.y:.0f})"
+            text += f" ({drove}; carried forward, approximate)"
+            parts.append(text)
+        if event.position is not None and event.nearest_obstacle is not None:
+            obstacle = event.nearest_obstacle
+            parts.append(
+                f"nearest obstacle: {obstacle.get('class')}, "
+                f"{float(obstacle.get('distance', 0.0)):.0f} cells away"
+            )
+        return "; ".join(parts)
 
     if event.room:
         parts.append(f"in {event.room}")
@@ -365,11 +456,28 @@ class StuckMonitor:
         self,
         *,
         docked_statuses: Iterable[str] = (),
+        still_statuses: Iterable[str] = (),
         max_position_age: float = MAX_POSITION_AGE_SECONDS,
+        carry_max_driving: float = CARRY_MAX_DRIVING_SECONDS,
     ) -> None:
-        """Set the family's docked statuses and the fix age cut-off."""
+        """Set the family's docked/still statuses and the fix age cut-off.
+
+        `still_statuses` is added to `STILL_STATUSES` (a family's paused and
+        error statuses). Any status that is neither docked nor still counts
+        as driving for the carry-forward rule.
+        """
         self.docked_statuses = frozenset(docked_statuses)
+        self.still_statuses = STILL_STATUSES | frozenset(still_statuses)
         self.max_position_age = max_position_age
+        self.carry_max_driving = carry_max_driving
+        # Carry-forward state: the last resting place, the driving seconds
+        # since it, and the previous observation (its time, its status, and
+        # whether the robot was driving from then on).
+        self._anchor: _Anchor | None = None
+        self._driving = 0.0
+        self._last_time: datetime | None = None
+        self._last_driving = False
+        self._last_status: str | None = None
         self.active: StuckEvent | None = None
         self.last: StuckEvent | None = None
         self.events_seen = 0
@@ -408,6 +516,8 @@ class StuckMonitor:
         stopping = stopping_faults_in(faults)
         status_text = None if status is None else str(status)
         docked = status_text in self.docked_statuses
+        now = now or _utcnow()
+        self._track_driving(status_text, docked, position, now)
 
         if not job_open:
             self._job_baseline = None
@@ -453,6 +563,12 @@ class StuckMonitor:
             )
             self.last = self.active
             self.events_seen += 1
+            # The robot has stopped: whatever status the DP still shows, it is
+            # not driving until the status changes.
+            self._last_driving = False
+            if self.active.carried is None and self.active.position is not None:
+                self._anchor = _Anchor("stop", self.active.position, now)
+                self._driving = 0.0
             return kind
 
         # Already alerting: clear on the faults dropping, or on the robot
@@ -467,8 +583,61 @@ class StuckMonitor:
             gone = not stopping
         if gone or docked:
             self.active = None
+            # Released: from here a driving status counts again, even if the
+            # DP never left it during the stop.
+            self._last_driving = (
+                not docked
+                and status_text is not None
+                and status_text not in self.still_statuses
+            )
             return "cleared"
         return None
+
+    def _track_driving(
+        self,
+        status: str | None,
+        docked: bool,
+        position: PositionFix | None,
+        now: datetime,
+    ) -> None:
+        """Count driving time since the anchor; re-anchor on the dock.
+
+        The time between two observations is charged to the status seen at
+        the first of them. A status counts as driving only from the moment it
+        *changes* to a driving value, so a stale `smart` left on the DP after a
+        fault does not run the clock.
+        """
+        if self._last_time is not None and self._last_driving:
+            elapsed = (now - self._last_time).total_seconds()
+            if elapsed > 0:
+                self._driving += elapsed
+        changed = status != self._last_status
+        if docked:
+            if changed or self._anchor is None or self._anchor.origin != "dock":
+                fix = None
+                if position is not None and (
+                    position.age_seconds is None
+                    or position.age_seconds <= DOCK_FIX_MAX_AGE_SECONDS
+                ):
+                    fix = position
+                self._anchor = _Anchor("dock", fix, now)
+            self._driving = 0.0
+            self._last_driving = False
+        elif changed:
+            self._last_driving = (
+                status is not None and status not in self.still_statuses
+            )
+        self._last_status = status
+        self._last_time = now
+
+    def _carry(self) -> _Anchor | None:
+        """The anchor to carry forward, or None if the robot may have moved."""
+        anchor = self._anchor
+        if anchor is None or self._driving > self.carry_max_driving:
+            return None
+        if anchor.origin == "stop" and anchor.position is None:
+            return None
+        return anchor
 
     def _build_event(
         self,
@@ -501,6 +670,22 @@ class StuckMonitor:
             else:
                 stale_age = position.age_seconds
 
+        carried: Carried | None = None
+        if usable is None:
+            anchor = self._carry()
+            if anchor is not None:
+                at = now or _utcnow()
+                carried = Carried(anchor.origin, anchor.since, self._driving)
+                if anchor.position is not None:
+                    base = anchor.position.age_seconds or 0.0
+                    usable = PositionFix(
+                        x=anchor.position.x,
+                        y=anchor.position.y,
+                        source=anchor.position.source,
+                        approximate=True,
+                        age_seconds=base + max(0.0, (at - anchor.since).total_seconds()),
+                    )
+
         room: str | None = None
         nearest: dict[str, Any] | None = None
         if usable is not None:
@@ -526,6 +711,7 @@ class StuckMonitor:
             room=room,
             nearest_obstacle=nearest,
             at=now or _utcnow(),
+            carried=carried,
         )
 
     def as_attributes(self) -> dict[str, Any]:

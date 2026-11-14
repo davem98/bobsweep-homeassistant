@@ -11,6 +11,16 @@ families are derived from the vendor app's own datapoint tables and remain
 ## [Unreleased]
 
 ### Added
+- **Stuck alerts carry a location forward.** When a stop has no fresh
+  position fix, the alert now reuses the last stop that had one, if the robot
+  has driven for at most 30 s since ("probably still where it stopped 20 min
+  earlier, in Hallway"). If the robot faults or falls asleep within 30 s of
+  leaving the dock, the alert says "probably near the dock". Either way the
+  position is marked approximate, and the event carries a new `carried`
+  attribute (`from`, `since`, `driving_seconds`). Before this, a robot that
+  was restarted after a fault and stopped again a few seconds later was
+  reported as "position unknown".
+
 - **Voice control beyond room cleaning**, for Home Assistant Assist: "stop
   Rosie", "pause Rosie", "Rosie, carry on", "send Rosie home", "where is
   Rosie" / "what is Rosie doing". Home Assistant has no stop, pause or status
