@@ -128,6 +128,7 @@ _VERSIONED_HEADERS = (HEADER_AB, HEADER_BB)
 # --- 0xAA frames: BASIC_TRANS_CMD ---
 CMD_CLEAN_SELECT_ROOMS = 0x12         # eCleanSelectRooms (18) — app commands a room clean
 CMD_CLEAN_SELECT_ROOMS_TO_APP = 0x22  # eCleanSelectRoomsToApp (34) — the robot's ack
+CMD_RESTRICTED = 0x14           # eRestricted (20) — app saves the no-go rectangles
 CMD_RESTRICTED_TO_APP = 0x24    # eRestrictedToApp (36) — the no-go rectangles
 CMD_AI_OBJECT_TO_BOT = 0x36     # eAiObjectToBot (54)
 CMD_AI_OBJECT_TO_APP = 0x37     # eAiObjectToAPP (55) — detected obstacles
@@ -989,6 +990,64 @@ def decode_rectangles(data: bytes) -> list[list[tuple[int, int]]] | None:
             ]
         )
     return rects
+
+
+#: The most no-go rectangles one command may carry. The 0xAA length byte
+#: would allow 15; the app's own editor limit is not known, so this stays at
+#: a number the validation unit has been seen to hold comfortably (it had
+#: five) plus headroom. A guess, not a measurement.
+MAX_NO_GO_ZONES = 10
+
+
+def encode_rectangles(rects: Sequence[Sequence[Sequence[int]]]) -> bytes:
+    """Encode a rectangle list: `[count]` then 16 bytes per rectangle.
+
+    The inverse of `decode_rectangles`, and byte-for-byte what the vendor app
+    builds for a no-go save (read from its dex, 2026-11-24:
+    `MapEditView.convertDataToIntList` writes a count, then for each
+    four-corner rectangle `addConvertedPointsToList` appends `x` then `y`,
+    each as a two-byte big-endian two's-complement value via
+    `RestrictedAreasOperations.addBytesToPointList`). Corners are kept in the
+    order given; the app sends them in the order its editor holds them, and
+    which orders the robot accepts is **not measured** -- so send corners in
+    the order the robot itself reported them (`0xAA 0x24`) or the same
+    winding.
+
+    Strict: exactly four corners per rectangle, integer coordinates within
+    int16, at most `MAX_NO_GO_ZONES` rectangles.
+    """
+    if len(rects) > MAX_NO_GO_ZONES:
+        raise ValueError(f"at most {MAX_NO_GO_ZONES} rectangles fit in one command")
+    out = bytearray([len(rects)])
+    for rect in rects:
+        if len(rect) != 4:
+            raise ValueError("a rectangle needs exactly four corners")
+        for corner in rect:
+            if len(corner) != 2:
+                raise ValueError(f"corner {corner!r} is not an (x, y) pair")
+            for value in corner:
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise ValueError(f"coordinate {value!r} is not an integer")
+                if not -0x8000 <= value <= 0x7FFF:
+                    raise ValueError(f"coordinate {value} does not fit in int16")
+                out += (value & 0xFFFF).to_bytes(2, "big")
+    return bytes(out)
+
+
+def encode_no_go_zones_frame(rects: Sequence[Sequence[Sequence[int]]]) -> str:
+    """Build the app's no-go save command, base64 for a tinytuya write.
+
+    An 0xAA frame, cmd 0x14 `eRestricted`, data `encode_rectangles(rects)` --
+    what `sendRestrictedAreasToRobot` in the vendor app's bundle passes to
+    `sendBasicTransCmd` (read 2026-11-24). **Not yet sent to hardware.**
+    Inferred, to be measured before anything relies on it: that the command
+    replaces the robot's whole no-go list (the app always sends every zone it
+    holds), that the robot answers with `0xAA 0x24`, and that it may be sent
+    without the `eFence` (virtual wall) command the app sends just before it.
+    An empty list is a valid frame and, if the replace reading is right,
+    clears every no-go zone -- callers must refuse that unless asked for.
+    """
+    return encode_frame_b64(CMD_RESTRICTED, encode_rectangles(rects), header=HEADER_AA)
 
 
 def decode_saved_maps(data: bytes) -> list[SavedMap] | None:
